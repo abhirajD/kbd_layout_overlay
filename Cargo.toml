@@ -1,0 +1,12 @@
+[package]
+name = "kbd_layout_overlay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+dirs = "5"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.11"
