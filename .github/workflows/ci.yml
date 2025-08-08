@@ -23,12 +23,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          targets: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
       - name: Test
@@ -36,7 +33,7 @@ jobs:
       - name: Package binary
         shell: bash
         run: |
-          bin_name=kbd_overlay
+          bin_name=kbd_layout_overlay
           out_name=kbd-overlay-${{ matrix.target }}
           bin_path=target/${{ matrix.target }}/release/${bin_name}${{ matrix.ext }}
           mkdir dist
