@@ -32,12 +32,7 @@ impl Config {
             .join("kbd_overlay");
         let path = dir.join("config.json");
         if let Ok(bytes) = fs::read(&path) {
-            if let Ok(mut cfg) = serde_json::from_slice::<Self>(&bytes) {
-                if let Some(p) = &cfg.image_path {
-                    if !p.exists() {
-                        cfg.image_path = None;
-                    }
-                }
+            if let Ok(cfg) = serde_json::from_slice(&bytes) {
                 return Ok(cfg);
             }
         }
