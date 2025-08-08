@@ -44,6 +44,7 @@ pub fn run(
     opacity: f32,
     invert: bool,
     persist: bool,
+    hotkey: Vec<rdev::Key>,
 ) -> Result<()> {
     let event_loop = EventLoopBuilder::<OverlayEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -105,10 +106,10 @@ pub fn run(
     // Spawn listener thread for hotkey
     {
         let proxy = proxy.clone();
+        let required = hotkey;
         std::thread::spawn(move || {
             use rdev::{listen, EventType, Key};
             use std::collections::HashSet;
-            let required: [Key; 4] = [Key::ControlLeft, Key::Alt, Key::ShiftLeft, Key::Slash];
             let mut pressed = HashSet::new();
             let mut combo_active = false;
             let _ = listen(move |event| match event.event_type {

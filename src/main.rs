@@ -7,8 +7,17 @@ mod overlay;
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod overlay {
     use anyhow::Result;
+    use rdev::Key;
     use std::path::Path;
-    pub fn run(_img: Option<&Path>, _w: u32, _h: u32, _o: f32, _i: bool, _p: bool) -> Result<()> {
+    pub fn run(
+        _img: Option<&Path>,
+        _w: u32,
+        _h: u32,
+        _o: f32,
+        _i: bool,
+        _p: bool,
+        _hotkey: Vec<Key>,
+    ) -> Result<()> {
         log::warn!("overlay not supported on this platform");
         Ok(())
     }
@@ -16,9 +25,10 @@ mod overlay {
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use log::warn;
+use rdev::Key;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -44,6 +54,9 @@ struct Cli {
     /// Enable or disable autostart
     #[arg(long)]
     autostart: Option<bool>,
+    /// Hotkey combination (e.g., ControlLeft+Alt+ShiftLeft+Slash)
+    #[arg(long, value_delimiter = '+')]
+    hotkey: Option<Vec<String>>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -100,6 +113,12 @@ fn main() -> Result<()> {
             if let Some(a) = cli.autostart {
                 cfg.autostart = a;
             }
+            if let Some(h) = cli.hotkey {
+                let keys = parse_hotkey(&h)?;
+                validate_hotkey(&keys)?;
+                cfg.hotkey = keys;
+            }
+            validate_hotkey(&cfg.hotkey)?;
             cfg.save()?;
             if cfg.autostart {
                 autostart::enable()?;
@@ -113,6 +132,7 @@ fn main() -> Result<()> {
                 cfg.opacity,
                 cfg.invert,
                 cfg.persist,
+                cfg.hotkey.clone(),
             )?;
         }
     }
@@ -132,4 +152,45 @@ fn diagnose() {
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn diagnose() {
     warn!("diagnose not supported on this platform");
+}
+
+fn parse_hotkey(names: &[String]) -> Result<Vec<Key>> {
+    names
+        .iter()
+        .map(|n| {
+            let name = if n.eq_ignore_ascii_case("option") || n.eq_ignore_ascii_case("opt") {
+                "Alt"
+            } else if n.eq_ignore_ascii_case("command") || n.eq_ignore_ascii_case("cmd") {
+                "MetaLeft"
+            } else {
+                n.as_str()
+            };
+            serde_json::from_str::<Key>(&format!("\"{}\"", name))
+                .map_err(|_| anyhow!("invalid key name: {n}"))
+        })
+        .collect()
+}
+
+fn validate_hotkey(keys: &[Key]) -> Result<()> {
+    if !keys.iter().any(|&k| is_modifier(k)) {
+        return Err(anyhow!("hotkey must include at least one modifier key"));
+    }
+    if !keys.iter().any(|&k| !is_modifier(k)) {
+        return Err(anyhow!("hotkey must include at least one non-modifier key"));
+    }
+    Ok(())
+}
+
+fn is_modifier(key: Key) -> bool {
+    matches!(
+        key,
+        Key::Alt
+            | Key::AltGr
+            | Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::ControlLeft
+            | Key::ControlRight
+            | Key::MetaLeft
+            | Key::MetaRight
+    )
 }

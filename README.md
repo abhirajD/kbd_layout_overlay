@@ -18,12 +18,26 @@ falling back to the built-in image.
 Configuration options can be supplied on the command line:
 
 ```
-kbd_layout_overlay --image path/to.png --width 742 --height 235 --opacity 0.3 --invert false --persist true --autostart true
+kbd_layout_overlay --image path/to.png --width 742 --height 235 --opacity 0.3 --invert false --persist true --autostart true --hotkey ControlLeft+Alt+ShiftLeft+Slash
 ```
 
 Use `--autostart true` to enable starting the application at login or
 `--autostart false` to disable it. The preference is saved to the
 configuration file.
+
+Use `--hotkey` followed by a `+` separated list of key names to configure a
+different shortcut.
+
+Key names follow winit's `Key` enumeration. On macOS the Option key is
+reported as `Alt` and the Command key as `MetaLeft`/`MetaRight`. The parser also
+accepts `Option`/`Opt` in place of `Alt` and `Command`/`Cmd` in place of
+`MetaLeft`.
+
+Common combinations:
+
+- **Windows:** `Ctrl+Alt+Shift+Slash` (default), `Ctrl+Alt+K`
+- **macOS:** `Cmd+Option+Shift+/`, `Cmd+Option+K`
+- **Linux:** `Ctrl+Alt+Shift+Slash`, `Meta+Alt+K` (Meta = Windows/Super key)
 
 `kbd_layout_overlay diagnose` prints detected monitors and their scale
 factors and exits.
