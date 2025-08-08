@@ -34,6 +34,9 @@ struct Cli {
     /// Overlay opacity (0.0 - 1.0)
     #[arg(long)]
     opacity: Option<f32>,
+    /// Enable or disable autostart
+    #[arg(long)]
+    autostart: Option<bool>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -68,10 +71,27 @@ fn main() -> Result<()> {
         }
         None => {
             let mut cfg = config::Config::load()?;
-            if let Some(p) = cli.image { cfg.image_path = p; }
-            if let Some(w) = cli.width { cfg.width = w; }
-            if let Some(h) = cli.height { cfg.height = h; }
-            if let Some(o) = cli.opacity { cfg.opacity = o; }
+            if let Some(p) = cli.image {
+                cfg.image_path = p;
+            }
+            if let Some(w) = cli.width {
+                cfg.width = w;
+            }
+            if let Some(h) = cli.height {
+                cfg.height = h;
+            }
+            if let Some(o) = cli.opacity {
+                cfg.opacity = o;
+            }
+            if let Some(a) = cli.autostart {
+                cfg.autostart = a;
+            }
+            cfg.save()?;
+            if cfg.autostart {
+                autostart::enable()?;
+            } else {
+                autostart::disable()?;
+            }
             overlay::run(&cfg.image_path, cfg.width, cfg.height, cfg.opacity)?;
         }
     }
