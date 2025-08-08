@@ -1,27 +1,31 @@
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::num::NonZeroU32;
 
+use active_win_pos_rs::get_active_window;
 use anyhow::Result;
 use display_info::DisplayInfo;
-use active_win_pos_rs::get_active_window;
 use mouse_position::mouse_position::Mouse;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition},
     event::{Event, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder},
-    window::{WindowBuilder, WindowLevel, Window},
+    window::{Window, WindowBuilder, WindowLevel},
 };
 
+const DEFAULT_IMAGE: &[u8] = include_bytes!("../assets/keymap.png");
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    },
+};
 #[cfg(target_os = "macos")]
 use winit::platform::macos::WindowExtMacOS;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::WindowExtWindows;
-#[cfg(target_os = "windows")]
-use windows_sys::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TRANSPARENT},
-};
 
 #[derive(Debug, Clone, Copy)]
 pub enum OverlayEvent {
@@ -29,7 +33,7 @@ pub enum OverlayEvent {
     Hide,
 }
 
-pub fn run(image_path: &Path, width: u32, height: u32, opacity: f32) -> Result<()> {
+pub fn run(image_path: Option<&Path>, width: u32, height: u32, opacity: f32) -> Result<()> {
     let event_loop = EventLoopBuilder::<OverlayEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -54,7 +58,11 @@ pub fn run(image_path: &Path, width: u32, height: u32, opacity: f32) -> Result<(
         let hwnd = window.hwnd() as HWND;
         unsafe {
             let ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
-            SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED as i32 | WS_EX_TRANSPARENT as i32);
+            SetWindowLongW(
+                hwnd,
+                GWL_EXSTYLE,
+                ex | WS_EX_LAYERED as i32 | WS_EX_TRANSPARENT as i32,
+            );
         }
     }
 
@@ -62,12 +70,27 @@ pub fn run(image_path: &Path, width: u32, height: u32, opacity: f32) -> Result<(
     center_on_target(&window, width, height);
 
     // Load image data
-    let img = match image::open(image_path) {
-        Ok(i) => Some(i.to_rgba8()),
-        Err(e) => {
-            eprintln!("failed to load image {}: {e}", image_path.display());
-            None
-        }
+    let img = match image_path {
+        Some(path) => match image::open(path) {
+            Ok(i) => Some(i.to_rgba8()),
+            Err(e) => {
+                eprintln!("failed to load image {}: {e}", path.display());
+                match image::load_from_memory(DEFAULT_IMAGE) {
+                    Ok(i) => Some(i.to_rgba8()),
+                    Err(e) => {
+                        eprintln!("failed to load built-in image: {e}");
+                        None
+                    }
+                }
+            }
+        },
+        None => match image::load_from_memory(DEFAULT_IMAGE) {
+            Ok(i) => Some(i.to_rgba8()),
+            Err(e) => {
+                eprintln!("failed to load built-in image: {e}");
+                None
+            }
+        },
     };
     let context = unsafe { softbuffer::Context::new(&window) }.unwrap();
     let mut surface = unsafe { softbuffer::Surface::new(&context, &window) }.unwrap();
@@ -85,20 +108,18 @@ pub fn run(image_path: &Path, width: u32, height: u32, opacity: f32) -> Result<(
         use std::collections::HashSet;
         let required: [Key; 4] = [Key::ControlLeft, Key::Alt, Key::ShiftLeft, Key::Slash];
         let mut pressed = HashSet::new();
-        let _ = listen(move |event| {
-            match event.event_type {
-                EventType::KeyPress(key) => {
-                    pressed.insert(key);
-                    if required.iter().all(|k| pressed.contains(k)) {
-                        let _ = proxy.send_event(OverlayEvent::Show);
-                    }
+        let _ = listen(move |event| match event.event_type {
+            EventType::KeyPress(key) => {
+                pressed.insert(key);
+                if required.iter().all(|k| pressed.contains(k)) {
+                    let _ = proxy.send_event(OverlayEvent::Show);
                 }
-                EventType::KeyRelease(key) => {
-                    pressed.remove(&key);
-                    let _ = proxy.send_event(OverlayEvent::Hide);
-                }
-                _ => {}
             }
+            EventType::KeyRelease(key) => {
+                pressed.remove(&key);
+                let _ = proxy.send_event(OverlayEvent::Hide);
+            }
+            _ => {}
         });
     });
 
@@ -129,7 +150,10 @@ pub fn run(image_path: &Path, width: u32, height: u32, opacity: f32) -> Result<(
                     frame.present().unwrap();
                 }
             }
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            } => {
                 *control_flow = ControlFlow::Exit;
             }
             _ => {}
