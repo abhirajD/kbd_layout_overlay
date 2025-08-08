@@ -2,13 +2,13 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use image::RgbaImage;
+use image::{imageops::FilterType, RgbaImage};
 
 use active_win_pos_rs::get_active_window;
 use anyhow::Result;
 use display_info::DisplayInfo;
-use mouse_position::mouse_position::Mouse;
 use log::{error, warn};
+use mouse_position::mouse_position::Mouse;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition},
     event::{Event, WindowEvent},
@@ -36,7 +36,13 @@ pub enum OverlayEvent {
     Hide,
 }
 
-pub fn run(image_path: Option<&Path>, width: u32, height: u32, opacity: f32) -> Result<()> {
+pub fn run(
+    image_path: Option<&Path>,
+    width: u32,
+    height: u32,
+    opacity: f32,
+    invert: bool,
+) -> Result<()> {
     let event_loop = EventLoopBuilder::<OverlayEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -69,11 +75,21 @@ pub fn run(image_path: Option<&Path>, width: u32, height: u32, opacity: f32) -> 
         }
     }
 
-    window.set_inner_size(LogicalSize::new(width, height));
-    center_on_target(&window, width, height);
-
     // Load image data
-    let img = load_image(image_path);
+    let mut img = load_image(image_path);
+    if let Some(ref i) = img {
+        if i.width() != width || i.height() != height {
+            img = Some(image::imageops::resize(
+                i,
+                width,
+                height,
+                FilterType::Triangle,
+            ));
+        }
+    }
+
+    window.set_inner_size(LogicalSize::new(width, height));
+    bottom_center_on_target(&window, width, height);
     let context = unsafe { softbuffer::Context::new(&window) }.unwrap();
     let mut surface = unsafe { softbuffer::Surface::new(&context, &window) }.unwrap();
     surface
@@ -110,7 +126,7 @@ pub fn run(image_path: Option<&Path>, width: u32, height: u32, opacity: f32) -> 
         match event {
             Event::UserEvent(OverlayEvent::Show) => {
                 if buffer.lock().unwrap().is_some() {
-                    center_on_target(&window, width, height);
+                    bottom_center_on_target(&window, width, height);
                     window.set_visible(true);
                     window.request_redraw();
                 }
@@ -123,11 +139,13 @@ pub fn run(image_path: Option<&Path>, width: u32, height: u32, opacity: f32) -> 
                     let mut frame = surface.buffer_mut().unwrap();
                     for (i, pixel) in img.pixels().enumerate() {
                         let rgba = pixel.0;
+                        let (r, g, b) = if invert {
+                            (255 - rgba[0], 255 - rgba[1], 255 - rgba[2])
+                        } else {
+                            (rgba[0], rgba[1], rgba[2])
+                        };
                         let a = (rgba[3] as f32 * opacity) as u32;
-                        frame[i] = (a << 24)
-                            | ((rgba[0] as u32) << 16)
-                            | ((rgba[1] as u32) << 8)
-                            | (rgba[2] as u32);
+                        frame[i] = (a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
                     }
                     frame.present().unwrap();
                 }
@@ -188,11 +206,11 @@ fn target_point() -> Option<(i32, i32)> {
     }
 }
 
-fn center_on_target(window: &Window, width: u32, height: u32) {
+fn bottom_center_on_target(window: &Window, width: u32, height: u32) {
     if let Some((cx, cy)) = target_point() {
         if let Ok(info) = DisplayInfo::from_point(cx, cy) {
             let pos_x = info.x + (info.width as i32 - width as i32) / 2;
-            let pos_y = info.y + (info.height as i32 - height as i32) / 2;
+            let pos_y = info.y + (info.height as i32 - height as i32);
             window.set_outer_position(PhysicalPosition::new(pos_x, pos_y));
             window.set_inner_size(LogicalSize::new(width, height));
         }

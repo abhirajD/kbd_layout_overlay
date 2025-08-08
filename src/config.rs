@@ -10,6 +10,8 @@ pub struct Config {
     pub width: u32,
     pub height: u32,
     pub opacity: f32,
+    #[serde(default)]
+    pub invert: bool,
     pub autostart: bool,
 }
 
@@ -20,6 +22,7 @@ impl Default for Config {
             width: 742,
             height: 235,
             opacity: 0.3,
+            invert: false,
             autostart: false,
         }
     }
