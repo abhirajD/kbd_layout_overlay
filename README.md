@@ -27,6 +27,13 @@ configuration file.
 `kbd_layout_overlay diagnose` prints detected monitors and their scale
 factors and exits.
 
+Enable debug or informational output by setting the `RUST_LOG` environment
+variable before running the application. For example:
+
+```
+RUST_LOG=debug kbd_layout_overlay
+```
+
 ## Autostart helper
 
 The CLI exposes commands to register the application to run at login on

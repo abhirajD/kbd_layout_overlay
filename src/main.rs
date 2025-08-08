@@ -9,7 +9,7 @@ mod overlay {
     use anyhow::Result;
     use std::path::Path;
     pub fn run(_img: Option<&Path>, _w: u32, _h: u32, _o: f32) -> Result<()> {
-        println!("overlay not supported on this platform");
+        log::warn!("overlay not supported on this platform");
         Ok(())
     }
 }
@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
+use log::warn;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -59,6 +60,7 @@ enum AutostartAction {
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
     let cli = Cli::parse();
 
     match &cli.command {
@@ -109,11 +111,11 @@ fn diagnose() {
     let event_loop = winit::event_loop::EventLoop::<()>::new();
     for (i, m) in event_loop.available_monitors().enumerate() {
         let name = m.name().unwrap_or_else(|| "unknown".into());
-        println!("Monitor {i}: {name}, scale {}", m.scale_factor());
+        log::info!("Monitor {i}: {name}, scale {}", m.scale_factor());
     }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn diagnose() {
-    println!("diagnose not supported on this platform");
+    warn!("diagnose not supported on this platform");
 }

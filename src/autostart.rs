@@ -82,11 +82,11 @@ mod imp {
 mod imp {
     use super::*;
     pub fn enable() -> Result<()> {
-        println!("Autostart not supported on this platform.");
+        log::warn!("Autostart not supported on this platform.");
         Ok(())
     }
     pub fn disable() -> Result<()> {
-        println!("Autostart not supported on this platform.");
+        log::warn!("Autostart not supported on this platform.");
         Ok(())
     }
 }
