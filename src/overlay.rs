@@ -2,6 +2,8 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use image::RgbaImage;
+
 use active_win_pos_rs::get_active_window;
 use anyhow::Result;
 use display_info::DisplayInfo;
@@ -70,28 +72,7 @@ pub fn run(image_path: Option<&Path>, width: u32, height: u32, opacity: f32) -> 
     center_on_target(&window, width, height);
 
     // Load image data
-    let img = match image_path {
-        Some(path) => match image::open(path) {
-            Ok(i) => Some(i.to_rgba8()),
-            Err(e) => {
-                eprintln!("failed to load image {}: {e}", path.display());
-                match image::load_from_memory(DEFAULT_IMAGE) {
-                    Ok(i) => Some(i.to_rgba8()),
-                    Err(e) => {
-                        eprintln!("failed to load built-in image: {e}");
-                        None
-                    }
-                }
-            }
-        },
-        None => match image::load_from_memory(DEFAULT_IMAGE) {
-            Ok(i) => Some(i.to_rgba8()),
-            Err(e) => {
-                eprintln!("failed to load built-in image: {e}");
-                None
-            }
-        },
-    };
+    let img = load_image(image_path);
     let context = unsafe { softbuffer::Context::new(&window) }.unwrap();
     let mut surface = unsafe { softbuffer::Surface::new(&context, &window) }.unwrap();
     surface
@@ -159,6 +140,38 @@ pub fn run(image_path: Option<&Path>, width: u32, height: u32, opacity: f32) -> 
             _ => {}
         }
     });
+}
+
+fn load_image(image_path: Option<&Path>) -> Option<RgbaImage> {
+    if let Some(path) = image_path {
+        match image::open(path) {
+            Ok(i) => return Some(i.to_rgba8()),
+            Err(e) => eprintln!("failed to load image {}: {e}", path.display()),
+        }
+    }
+
+    if let Ok(mut exe) = std::env::current_exe() {
+        exe.set_file_name("keymap.png");
+        match image::open(&exe) {
+            Ok(i) => return Some(i.to_rgba8()),
+            Err(e) => {
+                if exe.exists() {
+                    eprintln!("failed to load {}: {e}", exe.display());
+                }
+            }
+        }
+    }
+
+    match image::load_from_memory(DEFAULT_IMAGE) {
+        Ok(i) => {
+            eprintln!("falling back to built-in image");
+            Some(i.to_rgba8())
+        }
+        Err(e) => {
+            eprintln!("failed to load built-in image: {e}");
+            None
+        }
+    }
 }
 
 fn target_point() -> Option<(i32, i32)> {
