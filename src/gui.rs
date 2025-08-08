@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use eframe::{egui, App, Frame};
-use egui::{ColorImage, TextureHandle};
+use egui::{Color32, ColorImage, TextureHandle};
 use image::{imageops::FilterType, RgbaImage};
 use rdev::Key;
 
@@ -16,10 +16,20 @@ pub fn run() -> Result<()> {
     eframe::run_native(
         "kbd_layout_overlay settings",
         native_options,
-        Box::new(|_cc| Box::new(GuiApp::new(cfg))),
+        Box::new(move |cc| {
+            cc.egui_ctx.set_visuals(fixed_visuals());
+            Box::new(GuiApp::new(cfg))
+        }),
     )
     .map_err(|e| anyhow!(e.to_string()))?;
     Ok(())
+}
+
+fn fixed_visuals() -> egui::Visuals {
+    let mut visuals = egui::Visuals::dark();
+    visuals.override_text_color = Some(Color32::WHITE);
+    visuals.panel_fill = Color32::from_rgb(30, 30, 30);
+    visuals
 }
 
 struct GuiApp {
