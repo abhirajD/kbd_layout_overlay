@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use rdev::Key;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub image_path: Option<PathBuf>,
     pub width: u32,
