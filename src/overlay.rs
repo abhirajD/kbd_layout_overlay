@@ -8,6 +8,7 @@ use active_win_pos_rs::get_active_window;
 use anyhow::Result;
 use display_info::DisplayInfo;
 use mouse_position::mouse_position::Mouse;
+use log::{error, warn};
 use winit::{
     dpi::{LogicalSize, PhysicalPosition},
     event::{Event, WindowEvent},
@@ -146,7 +147,7 @@ fn load_image(image_path: Option<&Path>) -> Option<RgbaImage> {
     if let Some(path) = image_path {
         match image::open(path) {
             Ok(i) => return Some(i.to_rgba8()),
-            Err(e) => eprintln!("failed to load image {}: {e}", path.display()),
+            Err(e) => error!("failed to load image {}: {e}", path.display()),
         }
     }
 
@@ -156,7 +157,7 @@ fn load_image(image_path: Option<&Path>) -> Option<RgbaImage> {
             Ok(i) => return Some(i.to_rgba8()),
             Err(e) => {
                 if exe.exists() {
-                    eprintln!("failed to load {}: {e}", exe.display());
+                    error!("failed to load {}: {e}", exe.display());
                 }
             }
         }
@@ -164,11 +165,11 @@ fn load_image(image_path: Option<&Path>) -> Option<RgbaImage> {
 
     match image::load_from_memory(DEFAULT_IMAGE) {
         Ok(i) => {
-            eprintln!("falling back to built-in image");
+            warn!("falling back to built-in image");
             Some(i.to_rgba8())
         }
         Err(e) => {
-            eprintln!("failed to load built-in image: {e}");
+            error!("failed to load built-in image: {e}");
             None
         }
     }
