@@ -29,6 +29,7 @@ struct GuiApp {
     preview: Option<TextureHandle>,
     dirty_preview: bool,
     error: Option<String>,
+    capturing: bool,
 }
 
 impl GuiApp {
@@ -46,6 +47,7 @@ impl GuiApp {
             preview: None,
             dirty_preview: true,
             error: None,
+            capturing: false,
         }
     }
 
@@ -129,7 +131,50 @@ impl App for GuiApp {
             }
             ui.checkbox(&mut self.cfg.persist, "Persist");
             ui.label("Hotkey (e.g., ControlLeft+Alt+ShiftLeft+Slash)");
-            ui.text_edit_singleline(&mut self.hotkey_input);
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(&mut self.hotkey_input);
+                let btn_label = if self.capturing {
+                    "Press keys..."
+                } else {
+                    "Capture"
+                };
+                if ui.button(btn_label).clicked() {
+                    self.capturing = !self.capturing;
+                }
+            });
+            if self.capturing {
+                ctx.input(|i| {
+                    for event in &i.events {
+                        match event {
+                            egui::Event::Key {
+                                key, pressed: true, ..
+                            } => {
+                                if let Some(k) = egui_to_rdev(*key) {
+                                    let mut keys = modifiers_to_rdev(i.modifiers);
+                                    if !keys.contains(&k) {
+                                        keys.push(k);
+                                    }
+                                    self.hotkey_input = hotkey_to_string(&keys);
+                                    self.capturing = false;
+                                    break;
+                                }
+                            }
+                            egui::Event::Text(t) => {
+                                if let Some(k) = text_to_rdev(t) {
+                                    let mut keys = modifiers_to_rdev(i.modifiers);
+                                    if !keys.contains(&k) {
+                                        keys.push(k);
+                                    }
+                                    self.hotkey_input = hotkey_to_string(&keys);
+                                    self.capturing = false;
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+            }
             ui.separator();
             ui.label("Preview");
             if let Some(tex) = &self.preview {
@@ -173,6 +218,113 @@ fn hotkey_to_string(keys: &[Key]) -> String {
         .map(|k| format!("{:?}", k))
         .collect::<Vec<_>>()
         .join("+")
+}
+
+fn modifiers_to_rdev(m: egui::Modifiers) -> Vec<Key> {
+    let mut keys = Vec::new();
+    if m.ctrl {
+        keys.push(Key::ControlLeft);
+    }
+    if m.shift {
+        keys.push(Key::ShiftLeft);
+    }
+    if m.alt {
+        keys.push(Key::Alt);
+    }
+    if m.mac_cmd {
+        keys.push(Key::MetaLeft);
+    }
+    keys
+}
+
+fn egui_to_rdev(key: egui::Key) -> Option<Key> {
+    use egui::Key::*;
+    let k = match key {
+        ArrowDown => Key::DownArrow,
+        ArrowLeft => Key::LeftArrow,
+        ArrowRight => Key::RightArrow,
+        ArrowUp => Key::UpArrow,
+        Escape => Key::Escape,
+        Tab => Key::Tab,
+        Backspace => Key::Backspace,
+        Enter => Key::Return,
+        Space => Key::Space,
+        Insert => Key::Insert,
+        Delete => Key::Delete,
+        Home => Key::Home,
+        End => Key::End,
+        PageUp => Key::PageUp,
+        PageDown => Key::PageDown,
+        Minus => Key::Minus,
+        PlusEquals => Key::Equal,
+        Num0 => Key::Num0,
+        Num1 => Key::Num1,
+        Num2 => Key::Num2,
+        Num3 => Key::Num3,
+        Num4 => Key::Num4,
+        Num5 => Key::Num5,
+        Num6 => Key::Num6,
+        Num7 => Key::Num7,
+        Num8 => Key::Num8,
+        Num9 => Key::Num9,
+        A => Key::KeyA,
+        B => Key::KeyB,
+        C => Key::KeyC,
+        D => Key::KeyD,
+        E => Key::KeyE,
+        F => Key::KeyF,
+        G => Key::KeyG,
+        H => Key::KeyH,
+        I => Key::KeyI,
+        J => Key::KeyJ,
+        K => Key::KeyK,
+        L => Key::KeyL,
+        M => Key::KeyM,
+        N => Key::KeyN,
+        O => Key::KeyO,
+        P => Key::KeyP,
+        Q => Key::KeyQ,
+        R => Key::KeyR,
+        S => Key::KeyS,
+        T => Key::KeyT,
+        U => Key::KeyU,
+        V => Key::KeyV,
+        W => Key::KeyW,
+        X => Key::KeyX,
+        Y => Key::KeyY,
+        Z => Key::KeyZ,
+        F1 => Key::F1,
+        F2 => Key::F2,
+        F3 => Key::F3,
+        F4 => Key::F4,
+        F5 => Key::F5,
+        F6 => Key::F6,
+        F7 => Key::F7,
+        F8 => Key::F8,
+        F9 => Key::F9,
+        F10 => Key::F10,
+        F11 => Key::F11,
+        F12 => Key::F12,
+        _ => return None,
+    };
+    Some(k)
+}
+
+fn text_to_rdev(t: &str) -> Option<Key> {
+    match t {
+        "/" | "?" => Some(Key::Slash),
+        "\\" | "|" => Some(Key::BackSlash),
+        "," | "<" => Some(Key::Comma),
+        "." | ">" => Some(Key::Dot),
+        ";" | ":" => Some(Key::SemiColon),
+        "'" | "\"" => Some(Key::Quote),
+        "`" | "~" => Some(Key::BackQuote),
+        "[" | "{" => Some(Key::LeftBracket),
+        "]" | "}" => Some(Key::RightBracket),
+        "-" | "_" => Some(Key::Minus),
+        "=" | "+" => Some(Key::Equal),
+        _ => None,
+    }
 }
 
 fn parse_hotkey_str(input: &str) -> Result<Vec<Key>> {
