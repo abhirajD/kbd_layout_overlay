@@ -1,5 +1,6 @@
 mod autostart;
 mod config;
+mod gui;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod overlay;
@@ -70,6 +71,8 @@ enum Commands {
     },
     /// Print monitor and DPI information
     Diagnose,
+    /// Launch graphical settings interface
+    Gui,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -89,6 +92,9 @@ fn main() -> Result<()> {
         },
         Some(Commands::Diagnose) => {
             diagnose();
+        }
+        Some(Commands::Gui) => {
+            gui::run()?;
         }
         None => {
             let mut cfg = config::Config::load()?;
