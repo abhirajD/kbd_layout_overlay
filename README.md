@@ -13,8 +13,12 @@ loaded the hotkey is ignored and an error is printed.
 Configuration options can be supplied on the command line:
 
 ```
-kbd_layout_overlay --image path/to.png --width 750 --height 50 --opacity 0.3
+kbd_layout_overlay --image path/to.png --width 750 --height 50 --opacity 0.3 --autostart true
 ```
+
+Use `--autostart true` to enable starting the application at login or
+`--autostart false` to disable it. The preference is saved to the
+configuration file.
 
 `kbd_layout_overlay diagnose` prints detected monitors and their scale
 factors and exits.
