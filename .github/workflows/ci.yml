@@ -40,7 +40,11 @@ jobs:
           cp "$bin_path" dist/
           mv dist/${bin_name}${{ matrix.ext }} dist/${out_name}${{ matrix.ext }}
           cd dist
-          zip ../${out_name}.zip ${out_name}${{ matrix.ext }}
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            powershell.exe -Command "Compress-Archive -Path ${out_name}${{ matrix.ext }} -DestinationPath ..\\${out_name}.zip"
+          else
+            zip ../${out_name}.zip ${out_name}${{ matrix.ext }}
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: kbd-overlay-${{ matrix.target }}
