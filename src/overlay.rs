@@ -43,7 +43,10 @@ pub fn run(image_path: &Path, width: u32, height: u32, opacity: f32) -> Result<(
     // make window click-through and shadowless
     #[cfg(target_os = "macos")]
     {
-        window.set_ignores_mouse_events(true);
+        // winit 0.28 removed `set_ignores_mouse_events` in favour of the
+        // cross-platform `set_cursor_hittest`. Disable hit testing to allow
+        // the overlay window to be click-through.
+        let _ = window.set_cursor_hittest(false);
         window.set_has_shadow(false);
     }
     #[cfg(target_os = "windows")]
