@@ -6,8 +6,8 @@ Displays an image overlay in response to a keyboard shortcut.
 
 Running the binary launches a background listener. Hold
 `Ctrl + Alt + Shift + Slash` to show the overlay and release any key to hide
-it. The image is centered on the monitor with the active window, falling back
-to the display under the mouse cursor. If no image is configured or the
+it. The image is centered horizontally and aligned to the bottom of the monitor
+with the active window, falling back to the display under the mouse cursor. If no image is configured or the
 configured path is missing, the application looks for a `keymap.png` next to
 the executable and uses it if found. Otherwise a built-in `keymap.png`
 (742×235) from the `assets` directory is used. If a configured image cannot be
@@ -17,7 +17,7 @@ falling back to the built-in image.
 Configuration options can be supplied on the command line:
 
 ```
-kbd_layout_overlay --image path/to.png --width 742 --height 235 --opacity 0.3 --autostart true
+kbd_layout_overlay --image path/to.png --width 742 --height 235 --opacity 0.3 --invert false --autostart true
 ```
 
 Use `--autostart true` to enable starting the application at login or
@@ -53,6 +53,6 @@ user's home directory and loaded with `launchctl`.
 
 - hotkey shows and hides overlay instantly
 - overlay ignores mouse clicks
-- image is centered on the active monitor (cursor monitor fallback)
+- image appears at the bottom center of the active monitor (cursor monitor fallback)
 - size consistent on HiDPI displays
 - autostart launches app after reboot

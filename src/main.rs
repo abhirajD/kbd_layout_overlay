@@ -8,7 +8,7 @@ mod overlay;
 mod overlay {
     use anyhow::Result;
     use std::path::Path;
-    pub fn run(_img: Option<&Path>, _w: u32, _h: u32, _o: f32) -> Result<()> {
+    pub fn run(_img: Option<&Path>, _w: u32, _h: u32, _o: f32, _i: bool) -> Result<()> {
         log::warn!("overlay not supported on this platform");
         Ok(())
     }
@@ -35,6 +35,9 @@ struct Cli {
     /// Overlay opacity (0.0 - 1.0)
     #[arg(long)]
     opacity: Option<f32>,
+    /// Invert image colors
+    #[arg(long)]
+    invert: Option<bool>,
     /// Enable or disable autostart
     #[arg(long)]
     autostart: Option<bool>,
@@ -85,6 +88,9 @@ fn main() -> Result<()> {
             if let Some(o) = cli.opacity {
                 cfg.opacity = o;
             }
+            if let Some(i) = cli.invert {
+                cfg.invert = i;
+            }
             if let Some(a) = cli.autostart {
                 cfg.autostart = a;
             }
@@ -99,6 +105,7 @@ fn main() -> Result<()> {
                 cfg.width,
                 cfg.height,
                 cfg.opacity,
+                cfg.invert,
             )?;
         }
     }
