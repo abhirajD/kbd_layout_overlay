@@ -7,9 +7,10 @@ Displays an image overlay in response to a keyboard shortcut.
 Running the binary launches a background listener. Hold
 `Ctrl + Alt + Shift + Slash` to show the overlay and release any key to hide
 it. The image is centered on the monitor with the active window, falling back
-to the display under the mouse cursor. If no image is configured a built-in
-`keymap.png` (742×235) is used. If the configured image cannot be loaded the
-hotkey is ignored and an error is printed.
+to the display under the mouse cursor. If no image is configured or the
+configured path is missing, a built-in `keymap.png` (742×235) from the `assets`
+directory is used. If a configured image cannot be loaded an error is printed
+and the built-in image is used instead.
 
 Configuration options can be supplied on the command line:
 
