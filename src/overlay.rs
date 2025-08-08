@@ -34,6 +34,7 @@ use winit::platform::windows::WindowExtWindows;
 pub enum OverlayEvent {
     Show,
     Hide,
+    Toggle,
 }
 
 pub fn run(
@@ -42,6 +43,7 @@ pub fn run(
     height: u32,
     opacity: f32,
     invert: bool,
+    persist: bool,
 ) -> Result<()> {
     let event_loop = EventLoopBuilder::<OverlayEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -101,26 +103,44 @@ pub fn run(
     let buffer = Arc::new(Mutex::new(img));
 
     // Spawn listener thread for hotkey
-    std::thread::spawn(move || {
-        use rdev::{listen, EventType, Key};
-        use std::collections::HashSet;
-        let required: [Key; 4] = [Key::ControlLeft, Key::Alt, Key::ShiftLeft, Key::Slash];
-        let mut pressed = HashSet::new();
-        let _ = listen(move |event| match event.event_type {
-            EventType::KeyPress(key) => {
-                pressed.insert(key);
-                if required.iter().all(|k| pressed.contains(k)) {
-                    let _ = proxy.send_event(OverlayEvent::Show);
+    {
+        let proxy = proxy.clone();
+        std::thread::spawn(move || {
+            use rdev::{listen, EventType, Key};
+            use std::collections::HashSet;
+            let required: [Key; 4] = [Key::ControlLeft, Key::Alt, Key::ShiftLeft, Key::Slash];
+            let mut pressed = HashSet::new();
+            let mut combo_active = false;
+            let _ = listen(move |event| match event.event_type {
+                EventType::KeyPress(key) => {
+                    pressed.insert(key);
+                    if required.iter().all(|k| pressed.contains(k)) {
+                        if persist {
+                            if !combo_active {
+                                combo_active = true;
+                                let _ = proxy.send_event(OverlayEvent::Toggle);
+                            }
+                        } else {
+                            let _ = proxy.send_event(OverlayEvent::Show);
+                        }
+                    }
                 }
-            }
-            EventType::KeyRelease(key) => {
-                pressed.remove(&key);
-                let _ = proxy.send_event(OverlayEvent::Hide);
-            }
-            _ => {}
+                EventType::KeyRelease(key) => {
+                    pressed.remove(&key);
+                    if persist {
+                        if !required.iter().all(|k| pressed.contains(k)) {
+                            combo_active = false;
+                        }
+                    } else {
+                        let _ = proxy.send_event(OverlayEvent::Hide);
+                    }
+                }
+                _ => {}
+            });
         });
-    });
+    }
 
+    let mut visible = false;
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
@@ -129,10 +149,23 @@ pub fn run(
                     bottom_center_on_target(&window, width, height);
                     window.set_visible(true);
                     window.request_redraw();
+                    visible = true;
                 }
             }
             Event::UserEvent(OverlayEvent::Hide) => {
                 window.set_visible(false);
+                visible = false;
+            }
+            Event::UserEvent(OverlayEvent::Toggle) => {
+                if visible {
+                    window.set_visible(false);
+                    visible = false;
+                } else if buffer.lock().unwrap().is_some() {
+                    bottom_center_on_target(&window, width, height);
+                    window.set_visible(true);
+                    window.request_redraw();
+                    visible = true;
+                }
             }
             Event::RedrawRequested(_) => {
                 if let Some(img) = &*buffer.lock().unwrap() {

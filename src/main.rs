@@ -8,7 +8,7 @@ mod overlay;
 mod overlay {
     use anyhow::Result;
     use std::path::Path;
-    pub fn run(_img: Option<&Path>, _w: u32, _h: u32, _o: f32, _i: bool) -> Result<()> {
+    pub fn run(_img: Option<&Path>, _w: u32, _h: u32, _o: f32, _i: bool, _p: bool) -> Result<()> {
         log::warn!("overlay not supported on this platform");
         Ok(())
     }
@@ -38,6 +38,9 @@ struct Cli {
     /// Invert image colors
     #[arg(long)]
     invert: Option<bool>,
+    /// Persist overlay until hotkey is pressed again
+    #[arg(long)]
+    persist: Option<bool>,
     /// Enable or disable autostart
     #[arg(long)]
     autostart: Option<bool>,
@@ -91,6 +94,9 @@ fn main() -> Result<()> {
             if let Some(i) = cli.invert {
                 cfg.invert = i;
             }
+            if let Some(persist) = cli.persist {
+                cfg.persist = persist;
+            }
             if let Some(a) = cli.autostart {
                 cfg.autostart = a;
             }
@@ -106,6 +112,7 @@ fn main() -> Result<()> {
                 cfg.height,
                 cfg.opacity,
                 cfg.invert,
+                cfg.persist,
             )?;
         }
     }

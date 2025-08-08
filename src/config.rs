@@ -12,6 +12,8 @@ pub struct Config {
     pub opacity: f32,
     #[serde(default)]
     pub invert: bool,
+    #[serde(default)]
+    pub persist: bool,
     pub autostart: bool,
 }
 
@@ -23,6 +25,7 @@ impl Default for Config {
             height: 235,
             opacity: 0.3,
             invert: false,
+            persist: false,
             autostart: false,
         }
     }
