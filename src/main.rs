@@ -4,6 +4,8 @@ mod gui;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod overlay;
+#[cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
+mod tray;
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod overlay {
@@ -131,15 +133,22 @@ fn main() -> Result<()> {
             } else {
                 autostart::disable()?;
             }
-            overlay::run(
-                cfg.image_path.as_deref(),
-                cfg.width,
-                cfg.height,
-                cfg.opacity,
-                cfg.invert,
-                cfg.persist,
-                cfg.hotkey.clone(),
-            )?;
+            #[cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
+            {
+                tray::run(cfg)?;
+            }
+            #[cfg(not(all(feature = "tray", any(target_os = "windows", target_os = "macos"))))]
+            {
+                overlay::run(
+                    cfg.image_path.as_deref(),
+                    cfg.width,
+                    cfg.height,
+                    cfg.opacity,
+                    cfg.invert,
+                    cfg.persist,
+                    cfg.hotkey.clone(),
+                )?;
+            }
         }
     }
 
