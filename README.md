@@ -6,7 +6,9 @@ Displays an image overlay in response to a keyboard shortcut.
 
 Running the binary launches a background listener. Hold
 `Ctrl + Alt + Shift + Slash` to show the overlay and release any key to hide
-it.
+it. The image is centered on the monitor with the active window, falling back
+to the display under the mouse cursor. If the configured image cannot be
+loaded the hotkey is ignored and an error is printed.
 
 Configuration options can be supplied on the command line:
 
@@ -36,6 +38,6 @@ user's home directory and loaded with `launchctl`.
 
 - hotkey shows and hides overlay instantly
 - overlay ignores mouse clicks
-- image is centered on the active monitor
+- image is centered on the active monitor (cursor monitor fallback)
 - size consistent on HiDPI displays
 - autostart launches app after reboot
