@@ -6,9 +6,9 @@ mod overlay;
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod overlay {
-    use std::path::Path;
     use anyhow::Result;
-    pub fn run(_img: &Path, _w: u32, _h: u32, _o: f32) -> Result<()> {
+    use std::path::Path;
+    pub fn run(_img: Option<&Path>, _w: u32, _h: u32, _o: f32) -> Result<()> {
         println!("overlay not supported on this platform");
         Ok(())
     }
@@ -72,7 +72,7 @@ fn main() -> Result<()> {
         None => {
             let mut cfg = config::Config::load()?;
             if let Some(p) = cli.image {
-                cfg.image_path = p;
+                cfg.image_path = Some(p);
             }
             if let Some(w) = cli.width {
                 cfg.width = w;
@@ -92,7 +92,12 @@ fn main() -> Result<()> {
             } else {
                 autostart::disable()?;
             }
-            overlay::run(&cfg.image_path, cfg.width, cfg.height, cfg.opacity)?;
+            overlay::run(
+                cfg.image_path.as_deref(),
+                cfg.width,
+                cfg.height,
+                cfg.opacity,
+            )?;
         }
     }
 
