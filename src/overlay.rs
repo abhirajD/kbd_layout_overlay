@@ -74,10 +74,7 @@ pub fn run(image_path: Option<&Path>, width: u32, height: u32, opacity: f32) -> 
         Some(path) => match image::open(path) {
             Ok(i) => Some(i.to_rgba8()),
             Err(e) => {
-                eprintln!(
-                    "failed to load image {}: {e}; falling back to built-in image",
-                    path.display()
-                );
+                eprintln!("failed to load image {}: {e}", path.display());
                 match image::load_from_memory(DEFAULT_IMAGE) {
                     Ok(i) => Some(i.to_rgba8()),
                     Err(e) => {
