@@ -9,10 +9,13 @@ typedef struct {
     char overlay_path[256];
     float opacity; /* 0.0 - 1.0 */
     int invert; /* 0 or 1 */
+    int autostart; /* 0 or 1 */
 } Config;
 
 /* Load key=value config file */
 int load_config(const char *path, Config *cfg);
+/* Save config back to file */
+int save_config(const char *path, const Config *cfg);
 
 #ifdef __cplusplus
 }
