@@ -20,6 +20,7 @@ int load_config(const char *path, Config *cfg) {
     cfg->overlay_path[0] = '\0';
     cfg->opacity = 1.0f;
     cfg->invert = 0;
+    cfg->autostart = 0;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
         trim(line);
@@ -38,8 +39,21 @@ int load_config(const char *path, Config *cfg) {
             cfg->opacity = strtof(val, NULL);
         } else if (strcmp(key, "invert") == 0) {
             cfg->invert = atoi(val);
+        } else if (strcmp(key, "autostart") == 0) {
+            cfg->autostart = atoi(val);
         }
     }
+    fclose(f);
+    return 0;
+}
+
+int save_config(const char *path, const Config *cfg) {
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    fprintf(f, "overlay_path=%s\n", cfg->overlay_path);
+    fprintf(f, "opacity=%f\n", cfg->opacity);
+    fprintf(f, "invert=%d\n", cfg->invert);
+    fprintf(f, "autostart=%d\n", cfg->autostart);
     fclose(f);
     return 0;
 }
