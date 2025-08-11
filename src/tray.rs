@@ -1,14 +1,20 @@
 use std::thread;
 
 use anyhow::Result;
-use tray_icon::{menu::{Menu, MenuItem, MenuEvent}, TrayIconBuilder};
+use log::error;
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem},
+    TrayIconBuilder,
+};
 
 use crate::{config::Config, gui};
 
 const ICON_BYTES: &[u8] = include_bytes!("../assets/keymap.png");
 
 fn load_icon() -> tray_icon::Icon {
-    let image = image::load_from_memory(ICON_BYTES).expect("icon").into_rgba8();
+    let image = image::load_from_memory(ICON_BYTES)
+        .expect("icon")
+        .into_rgba8();
     let (w, h) = image.dimensions();
     tray_icon::Icon::from_rgba(image.into_raw(), w, h).expect("icon")
 }
@@ -17,7 +23,7 @@ pub fn run(cfg: Config) -> Result<()> {
     // spawn overlay thread
     let overlay_cfg = cfg.clone();
     thread::spawn(move || {
-        let _ = crate::overlay::run(
+        if let Err(e) = crate::overlay::run(
             overlay_cfg.image_path.as_deref(),
             overlay_cfg.width,
             overlay_cfg.height,
@@ -25,7 +31,9 @@ pub fn run(cfg: Config) -> Result<()> {
             overlay_cfg.invert,
             overlay_cfg.persist,
             overlay_cfg.hotkey.clone(),
-        );
+        ) {
+            error!("overlay error: {e}");
+        }
     });
 
     let menu = Menu::new();
