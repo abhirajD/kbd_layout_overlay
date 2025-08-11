@@ -1,5 +1,9 @@
 # kbd_layout_overlay
 
+> **Note:** The project is currently being rewritten using native APIs. The
+> original Rust implementation has been moved to `legacy/` for historical
+> reference and is no longer maintained.
+
 Displays an image overlay in response to a keyboard shortcut.
 
 ## Usage
