@@ -10,7 +10,6 @@ mod tray;
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod overlay {
     use anyhow::Result;
-    use rdev::Key;
     use std::path::Path;
     pub fn run(
         _img: Option<&Path>,
@@ -19,7 +18,7 @@ mod overlay {
         _o: f32,
         _i: bool,
         _p: bool,
-        _hotkey: Vec<Key>,
+        _hotkey: Vec<String>,
     ) -> Result<()> {
         log::warn!("overlay not supported on this platform");
         Ok(())
@@ -31,7 +30,6 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use log::warn;
-use rdev::Key;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -169,43 +167,35 @@ fn diagnose() {
     warn!("diagnose not supported on this platform");
 }
 
-fn parse_hotkey(names: &[String]) -> Result<Vec<Key>> {
+fn parse_hotkey(names: &[String]) -> Result<Vec<String>> {
     names
         .iter()
         .map(|n| {
-            let name = if n.eq_ignore_ascii_case("option") || n.eq_ignore_ascii_case("opt") {
-                "Alt"
+            if n.eq_ignore_ascii_case("option") || n.eq_ignore_ascii_case("opt") {
+                Ok("Alt".to_string())
             } else if n.eq_ignore_ascii_case("command") || n.eq_ignore_ascii_case("cmd") {
-                "MetaLeft"
+                Ok("Meta".to_string())
             } else {
-                n.as_str()
-            };
-            serde_json::from_str::<Key>(&format!("\"{}\"", name))
-                .map_err(|_| anyhow!("invalid key name: {n}"))
+                Ok(n.clone())
+            }
         })
         .collect()
 }
 
-fn validate_hotkey(keys: &[Key]) -> Result<()> {
-    if !keys.iter().any(|&k| is_modifier(k)) {
+fn validate_hotkey(keys: &[String]) -> Result<()> {
+    if !keys.iter().any(|k| is_modifier(k)) {
         return Err(anyhow!("hotkey must include at least one modifier key"));
     }
-    if !keys.iter().any(|&k| !is_modifier(k)) {
+    if !keys.iter().any(|k| !is_modifier(k)) {
         return Err(anyhow!("hotkey must include at least one non-modifier key"));
     }
     Ok(())
 }
 
-fn is_modifier(key: Key) -> bool {
+fn is_modifier(key: &str) -> bool {
     matches!(
-        key,
-        Key::Alt
-            | Key::AltGr
-            | Key::ShiftLeft
-            | Key::ShiftRight
-            | Key::ControlLeft
-            | Key::ControlRight
-            | Key::MetaLeft
-            | Key::MetaRight
+        key.to_ascii_lowercase().as_str(),
+        "alt" | "option" | "opt" | "shift" | "shiftleft" | "shiftright" | "control" |
+        "ctrl" | "controlleft" | "controlright" | "meta" | "metaleft" | "metaright" | "command" | "cmd"
     )
 }

@@ -2,7 +2,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use rdev::Key;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -16,7 +15,7 @@ pub struct Config {
     #[serde(default)]
     pub persist: bool,
     #[serde(default = "default_hotkey")]
-    pub hotkey: Vec<Key>,
+    pub hotkey: Vec<String>,
     #[serde(default)]
     pub autostart: bool,
 }
@@ -36,8 +35,13 @@ impl Default for Config {
     }
 }
 
-fn default_hotkey() -> Vec<Key> {
-    vec![Key::ControlLeft, Key::Alt, Key::ShiftLeft, Key::Slash]
+fn default_hotkey() -> Vec<String> {
+    vec![
+        "ControlLeft".into(),
+        "Alt".into(),
+        "ShiftLeft".into(),
+        "Slash".into(),
+    ]
 }
 
 impl Config {

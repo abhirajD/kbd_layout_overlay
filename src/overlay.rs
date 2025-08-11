@@ -12,7 +12,7 @@ use mouse_position::mouse_position::Mouse;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition},
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoopBuilder},
+    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
     window::{Window, WindowBuilder, WindowLevel},
 };
 
@@ -37,17 +37,41 @@ pub enum OverlayEvent {
     Toggle,
 }
 
+#[cfg(target_os = "windows")]
+use std::sync::OnceLock;
+#[cfg(target_os = "windows")]
+static EVENT_PROXY: OnceLock<EventLoopProxy<OverlayEvent>> = OnceLock::new();
+
 pub fn run(
     image_path: Option<&Path>,
     width: u32,
     height: u32,
     opacity: f32,
     invert: bool,
-    persist: bool,
-    hotkey: Vec<rdev::Key>,
+    _persist: bool,
+    hotkey: Vec<String>,
 ) -> Result<()> {
-    let event_loop = EventLoopBuilder::<OverlayEvent>::with_user_event().build();
+    let mut builder = EventLoopBuilder::<OverlayEvent>::with_user_event();
+    #[cfg(target_os = "windows")]
+    {
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, WM_HOTKEY};
+        builder.with_msg_hook(|msg| unsafe {
+            let msg = &*(msg as *const MSG);
+            if msg.message == WM_HOTKEY {
+                if let Some(p) = EVENT_PROXY.get() {
+                    let _ = p.send_event(OverlayEvent::Toggle);
+                }
+                true
+            } else {
+                false
+            }
+        });
+    }
+    let event_loop = builder.build();
     let proxy = event_loop.create_proxy();
+    #[cfg(target_os = "windows")]
+    let _ = EVENT_PROXY.set(proxy.clone());
 
     let window = WindowBuilder::new()
         .with_decorations(false)
@@ -103,42 +127,18 @@ pub fn run(
         .unwrap();
     let buffer = Arc::new(Mutex::new(img));
 
-    // Spawn listener thread for hotkey
+    #[cfg(target_os = "windows")]
     {
-        let proxy = proxy.clone();
-        let required = hotkey;
-        std::thread::spawn(move || {
-            use rdev::{listen, EventType, Key};
-            use std::collections::HashSet;
-            let mut pressed = HashSet::new();
-            let mut combo_active = false;
-            let _ = listen(move |event| match event.event_type {
-                EventType::KeyPress(key) => {
-                    pressed.insert(key);
-                    if required.iter().all(|k| pressed.contains(k)) {
-                        if persist {
-                            if !combo_active {
-                                combo_active = true;
-                                let _ = proxy.send_event(OverlayEvent::Toggle);
-                            }
-                        } else {
-                            let _ = proxy.send_event(OverlayEvent::Show);
-                        }
-                    }
-                }
-                EventType::KeyRelease(key) => {
-                    pressed.remove(&key);
-                    if persist {
-                        if !required.iter().all(|k| pressed.contains(k)) {
-                            combo_active = false;
-                        }
-                    } else {
-                        let _ = proxy.send_event(OverlayEvent::Hide);
-                    }
-                }
-                _ => {}
-            });
-        });
+        use windows_sys::Win32::UI::WindowsAndMessaging::{RegisterHotKey, MOD_NOREPEAT};
+        let (mods, key) = parse_hotkey_windows(&hotkey);
+        unsafe {
+            RegisterHotKey(window.hwnd() as HWND, 1, mods | MOD_NOREPEAT, key);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        start_hotkey_listener(hotkey, proxy.clone());
     }
 
     let mut visible = false;
@@ -249,4 +249,161 @@ fn bottom_center_on_target(window: &Window, width: u32, height: u32) {
             window.set_inner_size(LogicalSize::new(width, height));
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn parse_hotkey_windows(keys: &[String]) -> (u32, u32) {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, VK_OEM_2,
+    };
+    let mut mods = 0u32;
+    let mut vk = 0u32;
+    for k in keys {
+        match k.to_ascii_lowercase().as_str() {
+            "alt" | "option" | "opt" => mods |= MOD_ALT,
+            "ctrl" | "control" | "controlleft" | "controlright" => mods |= MOD_CONTROL,
+            "shift" | "shiftleft" | "shiftright" => mods |= MOD_SHIFT,
+            "meta" | "metaleft" | "metaright" | "win" | "command" | "cmd" => mods |= MOD_WIN,
+            "slash" => vk = VK_OEM_2,
+            n if n.len() == 1 && n.chars().all(|c| c.is_ascii_alphabetic()) => {
+                vk = n.chars().next().unwrap().to_ascii_uppercase() as u32;
+            }
+            n if n.len() == 1 && n.chars().all(|c| c.is_ascii_digit()) => {
+                vk = n.chars().next().unwrap() as u32;
+            }
+            _ => {}
+        }
+    }
+    (mods, vk)
+}
+
+#[cfg(target_os = "macos")]
+fn start_hotkey_listener(hotkey: Vec<String>, proxy: EventLoopProxy<OverlayEvent>) {
+    use core_foundation::base::kCFAllocatorDefault;
+    use core_foundation::runloop::{CFRunLoopAddSource, CFRunLoopGetCurrent, kCFRunLoopCommonModes};
+    use core_foundation::mach_port::CFMachPortCreateRunLoopSource;
+    use core_graphics::event::{
+        CGEventGetFlags, CGEventGetIntegerValueField, CGEventMaskBit, CGEventTapCreate,
+        CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy,
+        CGEventType, CGEventFlags, kCGKeyboardEventKeycode,
+    };
+    use std::os::raw::c_void;
+
+    let (mods, key) = parse_hotkey_macos(&hotkey);
+
+    #[repr(C)]
+    struct HotkeyData {
+        mods: CGEventFlags,
+        key: u32,
+        proxy: EventLoopProxy<OverlayEvent>,
+    }
+
+    extern "C" fn handler(
+        _proxy: CGEventTapProxy,
+        ty: CGEventType,
+        event: core_graphics::sys::CGEventRef,
+        user: *mut c_void,
+    ) -> core_graphics::sys::CGEventRef {
+        unsafe {
+            if ty == CGEventType::KeyDown {
+                let data = &*(user as *const HotkeyData);
+                let flags = CGEventGetFlags(event);
+                let keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode as u64) as u32;
+                if flags.contains(data.mods) && keycode == data.key {
+                    let _ = data.proxy.send_event(OverlayEvent::Toggle);
+                }
+            }
+            event
+        }
+    }
+
+    let data = Box::new(HotkeyData { mods, key, proxy });
+    unsafe {
+        let tap = CGEventTapCreate(
+            CGEventTapLocation::HID,
+            CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::Default,
+            CGEventMaskBit(CGEventType::KeyDown),
+            Some(handler),
+            Box::into_raw(data) as *mut c_void,
+        );
+        if tap.is_null() {
+            return;
+        }
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0);
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+        core_graphics::event::CGEventTapEnable(tap, true);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn parse_hotkey_macos(keys: &[String]) -> (CGEventFlags, u32) {
+    use core_graphics::event::CGEventFlags;
+    let mut mods = CGEventFlags::empty();
+    let mut keycode = 0u32;
+    for k in keys {
+        match k.to_ascii_lowercase().as_str() {
+            "alt" | "option" | "opt" => {
+                mods.insert(CGEventFlags::CGEventFlagAlternate);
+            }
+            "ctrl" | "control" | "controlleft" | "controlright" => {
+                mods.insert(CGEventFlags::CGEventFlagControl);
+            }
+            "shift" | "shiftleft" | "shiftright" => {
+                mods.insert(CGEventFlags::CGEventFlagShift);
+            }
+            "meta" | "metaleft" | "metaright" | "command" | "cmd" => {
+                mods.insert(CGEventFlags::CGEventFlagCommand);
+            }
+            "slash" => keycode = 0x2C, // kVK_ANSI_Slash
+            n if n.len() == 1 && n.chars().all(|c| c.is_ascii_alphabetic()) => {
+                keycode = match n.chars().next().unwrap().to_ascii_uppercase() {
+                    'A' => 0x00,
+                    'B' => 0x0B,
+                    'C' => 0x08,
+                    'D' => 0x02,
+                    'E' => 0x0E,
+                    'F' => 0x03,
+                    'G' => 0x05,
+                    'H' => 0x04,
+                    'I' => 0x22,
+                    'J' => 0x26,
+                    'K' => 0x28,
+                    'L' => 0x25,
+                    'M' => 0x2E,
+                    'N' => 0x2D,
+                    'O' => 0x1F,
+                    'P' => 0x23,
+                    'Q' => 0x0C,
+                    'R' => 0x0F,
+                    'S' => 0x01,
+                    'T' => 0x11,
+                    'U' => 0x20,
+                    'V' => 0x09,
+                    'W' => 0x0D,
+                    'X' => 0x07,
+                    'Y' => 0x10,
+                    'Z' => 0x06,
+                    _ => keycode,
+                };
+            }
+            n if n.len() == 1 && n.chars().all(|c| c.is_ascii_digit()) => {
+                keycode = match n {
+                    "0" => 0x1D,
+                    "1" => 0x12,
+                    "2" => 0x13,
+                    "3" => 0x14,
+                    "4" => 0x15,
+                    "5" => 0x17,
+                    "6" => 0x16,
+                    "7" => 0x1A,
+                    "8" => 0x1C,
+                    "9" => 0x19,
+                    _ => keycode,
+                };
+            }
+            _ => {}
+        }
+    }
+    (mods, keycode)
 }
