@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use image::{imageops::FilterType, RgbaImage};
 
 use active_win_pos_rs::get_active_window;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use display_info::DisplayInfo;
 use log::{error, warn};
 use mouse_position::mouse_position::Mouse;
@@ -54,8 +54,8 @@ pub fn run(
     let mut builder = EventLoopBuilder::<OverlayEvent>::with_user_event();
     #[cfg(target_os = "windows")]
     {
-        use winit::platform::windows::EventLoopBuilderExtWindows;
         use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, WM_HOTKEY};
+        use winit::platform::windows::EventLoopBuilderExtWindows;
         builder.with_msg_hook(|msg| unsafe {
             let msg = &*(msg as *const MSG);
             if msg.message == WM_HOTKEY {
@@ -117,14 +117,11 @@ pub fn run(
 
     window.set_inner_size(LogicalSize::new(width, height));
     bottom_center_on_target(&window, width, height);
-    let context = unsafe { softbuffer::Context::new(&window) }.unwrap();
-    let mut surface = unsafe { softbuffer::Surface::new(&context, &window) }.unwrap();
-    surface
-        .resize(
-            NonZeroU32::new(width).unwrap(),
-            NonZeroU32::new(height).unwrap(),
-        )
-        .unwrap();
+    let context = unsafe { softbuffer::Context::new(&window) }?;
+    let mut surface = unsafe { softbuffer::Surface::new(&context, &window) }?;
+    let width_nz = NonZeroU32::new(width).context("width must be non-zero")?;
+    let height_nz = NonZeroU32::new(height).context("height must be non-zero")?;
+    surface.resize(width_nz, height_nz)?;
     let buffer = Arc::new(Mutex::new(img));
 
     #[cfg(target_os = "windows")]
@@ -280,12 +277,14 @@ fn parse_hotkey_windows(keys: &[String]) -> (u32, u32) {
 #[cfg(target_os = "macos")]
 fn start_hotkey_listener(hotkey: Vec<String>, proxy: EventLoopProxy<OverlayEvent>) {
     use core_foundation::base::kCFAllocatorDefault;
-    use core_foundation::runloop::{CFRunLoopAddSource, CFRunLoopGetCurrent, kCFRunLoopCommonModes};
     use core_foundation::mach_port::CFMachPortCreateRunLoopSource;
+    use core_foundation::runloop::{
+        kCFRunLoopCommonModes, CFRunLoopAddSource, CFRunLoopGetCurrent,
+    };
     use core_graphics::event::{
-        CGEventGetFlags, CGEventGetIntegerValueField, CGEventMaskBit, CGEventTapCreate,
-        CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy,
-        CGEventType, CGEventFlags, kCGKeyboardEventKeycode,
+        kCGKeyboardEventKeycode, CGEventFlags, CGEventGetFlags, CGEventGetIntegerValueField,
+        CGEventMaskBit, CGEventTapCreate, CGEventTapLocation, CGEventTapOptions,
+        CGEventTapPlacement, CGEventTapProxy, CGEventType,
     };
     use std::os::raw::c_void;
 
@@ -308,7 +307,8 @@ fn start_hotkey_listener(hotkey: Vec<String>, proxy: EventLoopProxy<OverlayEvent
             if ty == CGEventType::KeyDown {
                 let data = &*(user as *const HotkeyData);
                 let flags = CGEventGetFlags(event);
-                let keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode as u64) as u32;
+                let keycode =
+                    CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode as u64) as u32;
                 if flags.contains(data.mods) && keycode == data.key {
                     let _ = data.proxy.send_event(OverlayEvent::Toggle);
                 }
