@@ -114,6 +114,21 @@ pub fn run(
             ));
         }
     }
+    // Apply opacity and inversion once and cache the transformed buffer
+    let img = img.map(|i| {
+        i.pixels()
+            .map(|pixel| {
+                let rgba = pixel.0;
+                let (r, g, b) = if invert {
+                    (255 - rgba[0], 255 - rgba[1], 255 - rgba[2])
+                } else {
+                    (rgba[0], rgba[1], rgba[2])
+                };
+                let a = (rgba[3] as f32 * opacity) as u32;
+                (a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+            })
+            .collect::<Vec<u32>>()
+    });
 
     window.set_inner_size(LogicalSize::new(width, height));
     bottom_center_on_target(&window, width, height);
@@ -168,16 +183,7 @@ pub fn run(
             Event::RedrawRequested(_) => {
                 if let Some(img) = &*buffer.lock().unwrap() {
                     let mut frame = surface.buffer_mut().unwrap();
-                    for (i, pixel) in img.pixels().enumerate() {
-                        let rgba = pixel.0;
-                        let (r, g, b) = if invert {
-                            (255 - rgba[0], 255 - rgba[1], 255 - rgba[2])
-                        } else {
-                            (rgba[0], rgba[1], rgba[2])
-                        };
-                        let a = (rgba[3] as f32 * opacity) as u32;
-                        frame[i] = (a << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
-                    }
+                    frame.copy_from_slice(img);
                     frame.present().unwrap();
                 }
             }
