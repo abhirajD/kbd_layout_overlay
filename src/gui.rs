@@ -4,7 +4,6 @@ use anyhow::{anyhow, Result};
 use eframe::{egui, App, Frame};
 use egui::{Color32, ColorImage, TextureHandle};
 use image::{imageops::FilterType, RgbaImage};
-use rdev::Key;
 
 use crate::config::Config;
 
@@ -159,8 +158,8 @@ impl App for GuiApp {
                             egui::Event::Key {
                                 key, pressed: true, ..
                             } => {
-                                if let Some(k) = egui_to_rdev(*key) {
-                                    let mut keys = modifiers_to_rdev(i.modifiers);
+                                if let Some(k) = egui_key_to_name(*key) {
+                                    let mut keys = modifiers_to_names(i.modifiers);
                                     if !keys.contains(&k) {
                                         keys.push(k);
                                     }
@@ -170,8 +169,8 @@ impl App for GuiApp {
                                 }
                             }
                             egui::Event::Text(t) => {
-                                if let Some(k) = text_to_rdev(t) {
-                                    let mut keys = modifiers_to_rdev(i.modifiers);
+                                if let Some(k) = text_to_name(t) {
+                                    let mut keys = modifiers_to_names(i.modifiers);
                                     if !keys.contains(&k) {
                                         keys.push(k);
                                     }
@@ -223,121 +222,118 @@ fn load_image(path: Option<&PathBuf>) -> Option<RgbaImage> {
         .map(|i| i.to_rgba8())
 }
 
-fn hotkey_to_string(keys: &[Key]) -> String {
-    keys.iter()
-        .map(|k| format!("{:?}", k))
-        .collect::<Vec<_>>()
-        .join("+")
+fn hotkey_to_string(keys: &[String]) -> String {
+    keys.join("+")
 }
 
-fn modifiers_to_rdev(m: egui::Modifiers) -> Vec<Key> {
+fn modifiers_to_names(m: egui::Modifiers) -> Vec<String> {
     let mut keys = Vec::new();
     if m.ctrl {
-        keys.push(Key::ControlLeft);
+        keys.push("ControlLeft".into());
     }
     if m.shift {
-        keys.push(Key::ShiftLeft);
+        keys.push("ShiftLeft".into());
     }
     if m.alt {
-        keys.push(Key::Alt);
+        keys.push("Alt".into());
     }
     if m.mac_cmd {
-        keys.push(Key::MetaLeft);
+        keys.push("Meta".into());
     }
     keys
 }
 
-fn egui_to_rdev(key: egui::Key) -> Option<Key> {
+fn egui_key_to_name(key: egui::Key) -> Option<String> {
     use egui::Key::*;
-    let k = match key {
-        ArrowDown => Key::DownArrow,
-        ArrowLeft => Key::LeftArrow,
-        ArrowRight => Key::RightArrow,
-        ArrowUp => Key::UpArrow,
-        Escape => Key::Escape,
-        Tab => Key::Tab,
-        Backspace => Key::Backspace,
-        Enter => Key::Return,
-        Space => Key::Space,
-        Insert => Key::Insert,
-        Delete => Key::Delete,
-        Home => Key::Home,
-        End => Key::End,
-        PageUp => Key::PageUp,
-        PageDown => Key::PageDown,
-        Minus => Key::Minus,
-        PlusEquals => Key::Equal,
-        Num0 => Key::Num0,
-        Num1 => Key::Num1,
-        Num2 => Key::Num2,
-        Num3 => Key::Num3,
-        Num4 => Key::Num4,
-        Num5 => Key::Num5,
-        Num6 => Key::Num6,
-        Num7 => Key::Num7,
-        Num8 => Key::Num8,
-        Num9 => Key::Num9,
-        A => Key::KeyA,
-        B => Key::KeyB,
-        C => Key::KeyC,
-        D => Key::KeyD,
-        E => Key::KeyE,
-        F => Key::KeyF,
-        G => Key::KeyG,
-        H => Key::KeyH,
-        I => Key::KeyI,
-        J => Key::KeyJ,
-        K => Key::KeyK,
-        L => Key::KeyL,
-        M => Key::KeyM,
-        N => Key::KeyN,
-        O => Key::KeyO,
-        P => Key::KeyP,
-        Q => Key::KeyQ,
-        R => Key::KeyR,
-        S => Key::KeyS,
-        T => Key::KeyT,
-        U => Key::KeyU,
-        V => Key::KeyV,
-        W => Key::KeyW,
-        X => Key::KeyX,
-        Y => Key::KeyY,
-        Z => Key::KeyZ,
-        F1 => Key::F1,
-        F2 => Key::F2,
-        F3 => Key::F3,
-        F4 => Key::F4,
-        F5 => Key::F5,
-        F6 => Key::F6,
-        F7 => Key::F7,
-        F8 => Key::F8,
-        F9 => Key::F9,
-        F10 => Key::F10,
-        F11 => Key::F11,
-        F12 => Key::F12,
+    let name = match key {
+        ArrowDown => "DownArrow",
+        ArrowLeft => "LeftArrow",
+        ArrowRight => "RightArrow",
+        ArrowUp => "UpArrow",
+        Escape => "Escape",
+        Tab => "Tab",
+        Backspace => "Backspace",
+        Enter => "Return",
+        Space => "Space",
+        Insert => "Insert",
+        Delete => "Delete",
+        Home => "Home",
+        End => "End",
+        PageUp => "PageUp",
+        PageDown => "PageDown",
+        Minus => "Minus",
+        PlusEquals => "Equal",
+        Num0 => "Num0",
+        Num1 => "Num1",
+        Num2 => "Num2",
+        Num3 => "Num3",
+        Num4 => "Num4",
+        Num5 => "Num5",
+        Num6 => "Num6",
+        Num7 => "Num7",
+        Num8 => "Num8",
+        Num9 => "Num9",
+        A => "KeyA",
+        B => "KeyB",
+        C => "KeyC",
+        D => "KeyD",
+        E => "KeyE",
+        F => "KeyF",
+        G => "KeyG",
+        H => "KeyH",
+        I => "KeyI",
+        J => "KeyJ",
+        K => "KeyK",
+        L => "KeyL",
+        M => "KeyM",
+        N => "KeyN",
+        O => "KeyO",
+        P => "KeyP",
+        Q => "KeyQ",
+        R => "KeyR",
+        S => "KeyS",
+        T => "KeyT",
+        U => "KeyU",
+        V => "KeyV",
+        W => "KeyW",
+        X => "KeyX",
+        Y => "KeyY",
+        Z => "KeyZ",
+        F1 => "F1",
+        F2 => "F2",
+        F3 => "F3",
+        F4 => "F4",
+        F5 => "F5",
+        F6 => "F6",
+        F7 => "F7",
+        F8 => "F8",
+        F9 => "F9",
+        F10 => "F10",
+        F11 => "F11",
+        F12 => "F12",
         _ => return None,
     };
-    Some(k)
+    Some(name.into())
 }
 
-fn text_to_rdev(t: &str) -> Option<Key> {
+fn text_to_name(t: &str) -> Option<String> {
     match t {
-        "/" | "?" => Some(Key::Slash),
-        "\\" | "|" => Some(Key::BackSlash),
-        "," | "<" => Some(Key::Comma),
-        "." | ">" => Some(Key::Dot),
-        ";" | ":" => Some(Key::SemiColon),
-        "'" | "\"" => Some(Key::Quote),
-        "`" | "~" => Some(Key::BackQuote),
-        "[" | "{" => Some(Key::LeftBracket),
-        "]" | "}" => Some(Key::RightBracket),
-        "-" | "_" => Some(Key::Minus),
-        "=" | "+" => Some(Key::Equal),
+        "/" | "?" => Some("Slash".into()),
+        "\\" | "|" => Some("BackSlash".into()),
+        "," | "<" => Some("Comma".into()),
+        "." | ">" => Some("Dot".into()),
+        ";" | ":" => Some("SemiColon".into()),
+        "'" | "\"" => Some("Quote".into()),
+        "`" | "~" => Some("BackQuote".into()),
+        "[" | "{" => Some("LeftBracket".into()),
+        "]" | "}" => Some("RightBracket".into()),
+        "-" | "_" => Some("Minus".into()),
+        "=" | "+" => Some("Equal".into()),
         _ => None,
     }
 }
 
-fn parse_hotkey_str(input: &str) -> Result<Vec<Key>> {
+fn parse_hotkey_str(input: &str) -> Result<Vec<String>> {
     if input.trim().is_empty() {
         return Ok(Vec::new());
     }
@@ -345,43 +341,35 @@ fn parse_hotkey_str(input: &str) -> Result<Vec<Key>> {
     parse_hotkey(&parts)
 }
 
-fn parse_hotkey(names: &[String]) -> Result<Vec<Key>> {
+fn parse_hotkey(names: &[String]) -> Result<Vec<String>> {
     names
         .iter()
         .map(|n| {
-            let name = if n.eq_ignore_ascii_case("option") || n.eq_ignore_ascii_case("opt") {
-                "Alt"
+            if n.eq_ignore_ascii_case("option") || n.eq_ignore_ascii_case("opt") {
+                Ok("Alt".to_string())
             } else if n.eq_ignore_ascii_case("command") || n.eq_ignore_ascii_case("cmd") {
-                "MetaLeft"
+                Ok("Meta".to_string())
             } else {
-                n.as_str()
-            };
-            serde_json::from_str::<Key>(&format!("\"{}\"", name))
-                .map_err(|_| anyhow!("invalid key name: {n}"))
+                Ok(n.clone())
+            }
         })
         .collect()
 }
 
-fn validate_hotkey(keys: &[Key]) -> Result<()> {
-    if !keys.iter().any(|&k| is_modifier(k)) {
+fn validate_hotkey(keys: &[String]) -> Result<()> {
+    if !keys.iter().any(|k| is_modifier(k)) {
         return Err(anyhow!("hotkey must include at least one modifier key"));
     }
-    if !keys.iter().any(|&k| !is_modifier(k)) {
+    if !keys.iter().any(|k| !is_modifier(k)) {
         return Err(anyhow!("hotkey must include at least one non-modifier key"));
     }
     Ok(())
 }
 
-fn is_modifier(key: Key) -> bool {
+fn is_modifier(key: &str) -> bool {
     matches!(
-        key,
-        Key::Alt
-            | Key::AltGr
-            | Key::ShiftLeft
-            | Key::ShiftRight
-            | Key::ControlLeft
-            | Key::ControlRight
-            | Key::MetaLeft
-            | Key::MetaRight
+        key.to_ascii_lowercase().as_str(),
+        "alt" | "option" | "opt" | "shift" | "shiftleft" | "shiftright" | "control" |
+        "ctrl" | "controlleft" | "controlright" | "meta" | "metaleft" | "metaright" | "command" | "cmd"
     )
 }
