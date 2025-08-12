@@ -1,77 +1,75 @@
 # kbd_layout_overlay
 
-> **Note:** The project is currently being rewritten using native APIs. The
-> original Rust implementation has been moved to `legacy/` for historical
-> reference and is no longer maintained.
+A lightweight utility that displays an image overlay in response to a global hotkey. Native implementations are provided for macOS and Windows.
 
-Displays an image overlay in response to a keyboard shortcut.
+## Installation
 
-## Usage
+### Windows
+1. Download `kbd_layout_overlay.exe` from the releases page or build it from source (see [Contributor Guide](#contributor-guide)).
+2. Place the executable and an optional `keymap.png` in a directory of your choice.
+3. Run the executable once; a `config.cfg` file is created next to it.
 
-Running the binary launches a background listener. By default, holding
-`Ctrl + Alt + Shift + Slash` shows the overlay and releasing any key hides
-it. Enable persistent mode to toggle the overlay on and off with the same
-shortcut. The image is centered horizontally and aligned to the bottom of the monitor
-with the active window, falling back to the display under the mouse cursor. If no image is configured or the
-configured path is missing, the application looks for a `keymap.png` next to
-the executable and uses it if found. Otherwise a built-in `keymap.png`
-(742×235) from the `shared/assets` directory is used. If a configured image cannot be
-loaded an error is printed and the same `keymap.png` lookup is performed before
-falling back to the built-in image.
+### macOS
+1. Download `Kbd Layout Overlay.app` from the releases page or build it from source.
+2. Move the app to `Applications` and launch it.
+3. A configuration file is written to `~/Library/Preferences/kbd_layout_overlay.cfg`.
 
-Configuration options can be supplied on the command line:
+## Configuration
 
-```
-kbd_layout_overlay --image path/to.png --width 742 --height 235 --opacity 0.3 --invert false --persist true --autostart true --hotkey ControlLeft+Alt+ShiftLeft+Slash
-```
+Settings are stored in a simple `key=value` file.
 
-Use `--autostart true` to enable starting the application at login or
-`--autostart false` to disable it. The preference is saved to the
-configuration file.
+| option        | description |
+|---------------|-------------|
+| `overlay_path`| Path to a custom image. If empty, a `keymap.png` next to the executable is used, otherwise a bundled fallback image. |
+| `opacity`     | Overlay opacity from `0.0`–`1.0`. |
+| `invert`      | `1` inverts colors, `0` leaves them unchanged. |
+| `autostart`   | `1` launches the app at login, `0` disables autostart. |
+| `hotkey`      | `+` separated list of modifiers and key, e.g. `Ctrl+Alt+K` or `Command+Option+K`. |
+| `persistent`  | `1` toggles the overlay, `0` shows it only while keys are held. |
 
-Use `--hotkey` followed by a `+` separated list of key names to configure a
-different shortcut.
+Edit the file with any text editor:
 
-Key names follow winit's `Key` enumeration. On macOS the Option key is
-reported as `Alt` and the Command key as `MetaLeft`/`MetaRight`. The parser also
-accepts `Option`/`Opt` in place of `Alt` and `Command`/`Cmd` in place of
-`MetaLeft`.
+- **Windows:** `config.cfg` in the same directory as `kbd_layout_overlay.exe`.
+- **macOS:** `~/Library/Preferences/kbd_layout_overlay.cfg`.
 
-Common combinations:
+### Replacing the overlay image
 
-- **Windows:** `Ctrl+Alt+Shift+Slash` (default), `Ctrl+Alt+K`
-- **macOS:** `Cmd+Option+Shift+/`, `Cmd+Option+K`
-- **Linux:** `Ctrl+Alt+Shift+Slash`, `Meta+Alt+K` (Meta = Windows/Super key)
+Place a custom PNG named `keymap.png` next to the executable or set `overlay_path` in the configuration file to another image path. Images are automatically scaled to fit the screen.
 
-`kbd_layout_overlay diagnose` prints detected monitors and their scale
-factors and exits.
+## Autostart and Hotkeys
 
-Enable debug or informational output by setting the `RUST_LOG` environment
-variable before running the application. For example:
+The overlay appears when the configured shortcut is pressed.
 
-```
-RUST_LOG=debug kbd_layout_overlay
-```
+- **Default hotkeys:** `Ctrl+Alt+Shift+Slash` on Windows, `Cmd+Option+Shift+/` on macOS.
+- Change the shortcut by editing the `hotkey` entry in the configuration file.
+- Enable persistent mode with `persistent=1`.
 
-## Autostart helper
-
-The CLI exposes commands to register the application to run at login on
-Windows and macOS.
+To start the application at login, set `autostart=1` in the configuration file or run:
 
 ```
 kbd_layout_overlay autostart enable   # register
 kbd_layout_overlay autostart disable  # unregister
 ```
 
-On Windows a registry entry is created under
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. On macOS a
-`LaunchAgents` plist named `com.kbd_layout_overlay.plist` is written to the
-user's home directory and loaded with `launchctl`.
+On Windows this creates or removes a registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. On macOS a `LaunchAgents` plist is created or deleted.
 
-## Manual test checklist
+## Contributor Guide
 
-- hotkey shows and hides overlay instantly
-- overlay ignores mouse clicks
-- image appears at the bottom center of the active monitor (cursor monitor fallback)
-- size consistent on HiDPI displays
-- autostart launches app after reboot
+### Repository layout
+
+```
+shared/   - platform-neutral C sources and assets
+windows/  - Win32 implementation and build script
+macos/    - Cocoa implementation and build script
+legacy/   - historical Rust version (unmaintained)
+```
+
+### Building
+
+```
+make -C shared             # build common static library
+windows\build_windows.bat  # compile Windows executable (Visual Studio Developer Command Prompt)
+./macos/build_macos.sh     # build macOS app bundle
+```
+
+Pass `--install` to the macOS build script to install the LaunchAgent for autostart.
