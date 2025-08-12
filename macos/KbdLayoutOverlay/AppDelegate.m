@@ -4,8 +4,45 @@
 #import "../shared/config.h"
 #import "../shared/overlay.h"
 #include <string.h>
+#include <strings.h>
 
 static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData);
+static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods);
+
+static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
+    *keyCode = kVK_ANSI_Slash;
+    *mods = 0;
+    if (!hotkey) return;
+    char buf[256];
+    strncpy(buf, hotkey, sizeof(buf));
+    buf[sizeof(buf) - 1] = '\0';
+    char *token = strtok(buf, "+");
+    while (token) {
+        if (!strcasecmp(token, "cmd") || !strcasecmp(token, "command") ||
+            !strncasecmp(token, "meta", 4)) {
+            *mods |= cmdKey;
+        } else if (!strcasecmp(token, "ctrl") || !strcasecmp(token, "control") ||
+                   !strncasecmp(token, "control", 7)) {
+            *mods |= controlKey;
+        } else if (!strcasecmp(token, "alt") || !strcasecmp(token, "option") ||
+                   !strcasecmp(token, "opt")) {
+            *mods |= optionKey;
+        } else if (!strcasecmp(token, "shift")) {
+            *mods |= shiftKey;
+        } else {
+            if (strlen(token) == 1) {
+                char c = token[0];
+                if (c >= 'a' && c <= 'z') *keyCode = kVK_ANSI_A + (c - 'a');
+                else if (c >= 'A' && c <= 'Z') *keyCode = kVK_ANSI_A + (c - 'A');
+                else if (c >= '0' && c <= '9') *keyCode = kVK_ANSI_0 + (c - '0');
+                else if (c == '/') *keyCode = kVK_ANSI_Slash;
+            } else if (!strcasecmp(token, "slash")) {
+                *keyCode = kVK_ANSI_Slash;
+            }
+        }
+        token = strtok(NULL, "+");
+    }
+}
 
 @implementation AppDelegate {
     EventHotKeyRef _hotKeyRef;
@@ -25,21 +62,30 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
         _cfg.opacity = 1.0f;
         _cfg.invert = 0;
         _cfg.autostart = 0;
+        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
+        _cfg.persistent = 0;
         save_config([_configPath fileSystemRepresentation], &_cfg);
+    }
+    if (!_cfg.hotkey[0]) {
+        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
     }
 
     [self createOverlay];
     [self setupStatusItem];
 
-    EventTypeSpec eventType;
-    eventType.eventClass = kEventClassKeyboard;
-    eventType.eventKind = kEventHotKeyPressed;
-    InstallApplicationEventHandler(&hotKeyHandler, 1, &eventType, (__bridge void *)self, &_eventHandler);
+    EventTypeSpec eventTypes[2];
+    eventTypes[0].eventClass = kEventClassKeyboard;
+    eventTypes[0].eventKind = kEventHotKeyPressed;
+    eventTypes[1].eventClass = kEventClassKeyboard;
+    eventTypes[1].eventKind = kEventHotKeyReleased;
+    InstallApplicationEventHandler(&hotKeyHandler, 2, eventTypes, (__bridge void *)self, &_eventHandler);
 
+    UInt32 keyCode = 0, mods = 0;
+    parseHotkey(_cfg.hotkey, &keyCode, &mods);
     EventHotKeyID hotKeyID;
     hotKeyID.signature = 'kblo';
     hotKeyID.id = 1;
-    RegisterEventHotKey(kVK_ANSI_O, cmdKey + shiftKey, hotKeyID, GetApplicationEventTarget(), 0, &_hotKeyRef);
+    RegisterEventHotKey(keyCode, mods, hotKeyID, GetApplicationEventTarget(), 0, &_hotKeyRef);
 
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 }
@@ -120,17 +166,28 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     return screen ?: [NSScreen mainScreen];
 }
 
-- (void)togglePanel {
+- (void)showPanel {
+    if ([_panel isVisible]) return;
+    NSScreen *screen = [self targetScreen];
+    NSRect frame = _panel.frame;
+    NSRect screenFrame = [screen visibleFrame];
+    frame.origin.x = NSMidX(screenFrame) - NSWidth(frame) / 2.0;
+    frame.origin.y = NSMinY(screenFrame);
+    [_panel setFrame:frame display:NO];
+    [_panel orderFront:nil];
+}
+
+- (void)hidePanel {
     if ([_panel isVisible]) {
         [_panel orderOut:nil];
+    }
+}
+
+- (void)togglePanel {
+    if ([_panel isVisible]) {
+        [self hidePanel];
     } else {
-        NSScreen *screen = [self targetScreen];
-        NSRect frame = _panel.frame;
-        NSRect screenFrame = [screen visibleFrame];
-        frame.origin.x = NSMidX(screenFrame) - NSWidth(frame) / 2.0;
-        frame.origin.y = NSMinY(screenFrame);
-        [_panel setFrame:frame display:NO];
-        [_panel orderFront:nil];
+        [self showPanel];
     }
 }
 
@@ -184,8 +241,18 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     AppDelegate *self = (__bridge AppDelegate *)userData;
     EventHotKeyID hkCom;
     GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, NULL, sizeof(hkCom), NULL, &hkCom);
-    if (hkCom.id == 1 && GetEventKind(event) == kEventHotKeyPressed) {
-        [self togglePanel];
+    if (hkCom.id != 1) return noErr;
+    UInt32 kind = GetEventKind(event);
+    if (kind == kEventHotKeyPressed) {
+        if (self->_cfg.persistent) {
+            [self togglePanel];
+        } else {
+            [self showPanel];
+        }
+    } else if (kind == kEventHotKeyReleased) {
+        if (!self->_cfg.persistent) {
+            [self hidePanel];
+        }
     }
     return noErr;
 }
