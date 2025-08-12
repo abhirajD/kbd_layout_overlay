@@ -2,45 +2,39 @@
 #import <CoreGraphics/CoreGraphics.h>
 
 @interface OverlayView ()
-@property (nonatomic) CGImageRef buffer;
+@property (nonatomic) CGImageRef image;
 @end
 
 @implementation OverlayView
 
 - (void)dealloc {
-    if (_buffer) {
-        CGImageRelease(_buffer);
+    if (_image) {
+        CGImageRelease(_image);
     }
 }
 
-- (void)cacheSampleBuffer {
-    size_t width = 300;
-    size_t height = 100;
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(NULL, width, height, 8, width * 4,
-                                            colorSpace, kCGImageAlphaPremultipliedLast);
-    CGColorSpaceRelease(colorSpace);
-
-    CGContextSetRGBFillColor(ctx, 0, 0, 0, 0.5);
-    CGContextFillRect(ctx, CGRectMake(0, 0, width, height));
-    CGContextSetRGBStrokeColor(ctx, 1, 0, 0, 1);
-    CGContextSetLineWidth(ctx, 4);
-    CGContextStrokeRect(ctx, CGRectMake(2, 2, width - 4, height - 4));
-
-    if (_buffer) {
-        CGImageRelease(_buffer);
+- (void)setImageData:(const unsigned char *)data width:(int)width height:(int)height {
+    if (_image) {
+        CGImageRelease(_image);
+        _image = NULL;
     }
-    _buffer = CGBitmapContextCreateImage(ctx);
-    CGContextRelease(ctx);
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, data,
+        (size_t)width * height * 4, NULL);
+    _image = CGImageCreate(width, height, 8, 32, width * 4, colorSpace,
+        kCGBitmapByteOrderDefault | kCGImageAlphaPremultipliedLast,
+        provider, NULL, false, kCGRenderingIntentDefault);
+    CGColorSpaceRelease(colorSpace);
+    CGDataProviderRelease(provider);
+    [self setNeedsDisplay:YES];
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
-    if (self.buffer) {
+    if (self.image) {
         CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
-        size_t width = CGImageGetWidth(self.buffer);
-        size_t height = CGImageGetHeight(self.buffer);
-        CGContextDrawImage(ctx, CGRectMake(0, 0, width, height), self.buffer);
+        CGRect rect = CGRectMake(0, 0, self.bounds.size.width, self.bounds.size.height);
+        CGContextDrawImage(ctx, rect, self.image);
     }
 }
 
