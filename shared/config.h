@@ -10,6 +10,8 @@ typedef struct {
     float opacity; /* 0.0 - 1.0 */
     int invert; /* 0 or 1 */
     int autostart; /* 0 or 1 */
+    char hotkey[256];
+    int persistent; /* 0 or 1 */
 } Config;
 
 /* Load key=value config file */

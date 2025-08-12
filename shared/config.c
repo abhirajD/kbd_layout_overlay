@@ -21,6 +21,8 @@ int load_config(const char *path, Config *cfg) {
     cfg->opacity = 1.0f;
     cfg->invert = 0;
     cfg->autostart = 0;
+    cfg->hotkey[0] = '\0';
+    cfg->persistent = 0;
     char line[512];
     while (fgets(line, sizeof(line), f)) {
         trim(line);
@@ -41,6 +43,11 @@ int load_config(const char *path, Config *cfg) {
             cfg->invert = atoi(val);
         } else if (strcmp(key, "autostart") == 0) {
             cfg->autostart = atoi(val);
+        } else if (strcmp(key, "hotkey") == 0) {
+            strncpy(cfg->hotkey, val, sizeof(cfg->hotkey) - 1);
+            cfg->hotkey[sizeof(cfg->hotkey) - 1] = '\0';
+        } else if (strcmp(key, "persistent") == 0) {
+            cfg->persistent = atoi(val);
         }
     }
     fclose(f);
@@ -54,6 +61,8 @@ int save_config(const char *path, const Config *cfg) {
     fprintf(f, "opacity=%f\n", cfg->opacity);
     fprintf(f, "invert=%d\n", cfg->invert);
     fprintf(f, "autostart=%d\n", cfg->autostart);
+    fprintf(f, "hotkey=%s\n", cfg->hotkey);
+    fprintf(f, "persistent=%d\n", cfg->persistent);
     fclose(f);
     return 0;
 }
