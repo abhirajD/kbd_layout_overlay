@@ -2,6 +2,7 @@
 #import <Carbon/Carbon.h>
 #import "OverlayView.h"
 #import "../shared/config.h"
+#import "../shared/overlay.h"
 #include <string.h>
 
 static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData);
@@ -14,6 +15,7 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     NSStatusItem *_statusItem;
     Config _cfg;
     NSString *_configPath;
+    Overlay _overlay;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -49,10 +51,23 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     if (_eventHandler) {
         RemoveEventHandler(_eventHandler);
     }
+    free_overlay(&_overlay);
 }
 
 - (void)createOverlay {
-    NSRect rect = NSMakeRect(100, 100, 300, 100);
+    const char *path = _cfg.overlay_path[0] ? _cfg.overlay_path : "keymap.png";
+    if (load_overlay_image(path, &_overlay) != 0) {
+        NSLog(@"Failed to load %s", path);
+        return;
+    }
+    apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
+
+    NSScreen *screen = [NSScreen mainScreen];
+    CGFloat scale = [screen backingScaleFactor];
+    CGFloat width = (CGFloat)_overlay.width / scale;
+    CGFloat height = (CGFloat)_overlay.height / scale;
+    NSRect rect = NSMakeRect(0, 0, width, height);
+
     _panel = [[NSPanel alloc] initWithContentRect:rect
                                         styleMask:NSWindowStyleMaskBorderless
                                           backing:NSBackingStoreBuffered
@@ -63,8 +78,8 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     [_panel setIgnoresMouseEvents:YES];
 
     _overlayView = [[OverlayView alloc] initWithFrame:rect];
+    [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
     [_panel setContentView:_overlayView];
-    [_overlayView cacheSampleBuffer];
 }
 
 - (void)togglePanel {
