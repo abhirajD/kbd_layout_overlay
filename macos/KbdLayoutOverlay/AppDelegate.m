@@ -101,7 +101,15 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
 }
 
 - (void)createOverlay {
-    const char *path = _cfg.overlay_path[0] ? _cfg.overlay_path : "keymap.png";
+    const char *path = NULL;
+    if (_cfg.overlay_path[0]) {
+        path = _cfg.overlay_path;
+    } else if ([[NSFileManager defaultManager] fileExistsAtPath:@"keymap.png"]) {
+        path = "keymap.png";
+    } else {
+        NSString *resPath = [[NSBundle mainBundle] pathForResource:@"keymap" ofType:@"png"];
+        path = resPath ? [resPath fileSystemRepresentation] : "keymap.png";
+    }
     NSScreen *screen = [NSScreen mainScreen];
     CGFloat scaleFactor = [screen backingScaleFactor];
     int max_w = (int)([screen frame].size.width * scaleFactor);

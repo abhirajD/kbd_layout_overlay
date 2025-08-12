@@ -1,0 +1,2 @@
+#include "resource.h"
+IDR_KEYMAP RCDATA "..\\shared\\assets\\keymap.png"

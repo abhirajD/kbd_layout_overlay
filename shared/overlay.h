@@ -15,6 +15,8 @@ typedef struct {
 } Overlay;
 
 int load_overlay_image(const char *path, int max_width, int max_height, Overlay *out);
+int load_overlay_image_mem(const unsigned char *buffer, int len,
+                           int max_width, int max_height, Overlay *out);
 void apply_opacity_inversion(Overlay *img, float opacity, int invert);
 const unsigned char *get_overlay_buffer(const Overlay *img, int *width, int *height);
 void free_overlay(Overlay *img);

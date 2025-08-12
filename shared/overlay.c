@@ -4,9 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-int load_overlay_image(const char *path, int max_width, int max_height, Overlay *out) {
-    unsigned char *data = stbi_load(path, &out->width, &out->height, &out->channels, 4);
-    if (!data) return -1;
+static int finalize_image(unsigned char *data, int width, int height,
+                          int max_width, int max_height, Overlay *out) {
+    out->width = width;
+    out->height = height;
     out->channels = 4;
 
     float scale_w = (float)max_width / (float)out->width;
@@ -41,6 +42,21 @@ int load_overlay_image(const char *path, int max_width, int max_height, Overlay 
 
     out->data = data;
     return 0;
+}
+
+int load_overlay_image(const char *path, int max_width, int max_height, Overlay *out) {
+    int w, h, channels;
+    unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
+    if (!data) return -1;
+    return finalize_image(data, w, h, max_width, max_height, out);
+}
+
+int load_overlay_image_mem(const unsigned char *buffer, int len,
+                           int max_width, int max_height, Overlay *out) {
+    int w, h, channels;
+    unsigned char *data = stbi_load_from_memory(buffer, len, &w, &h, &channels, 4);
+    if (!data) return -1;
+    return finalize_image(data, w, h, max_width, max_height, out);
 }
 
 void apply_opacity_inversion(Overlay *img, float opacity, int invert) {

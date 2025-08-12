@@ -4,6 +4,7 @@
 #include <string.h>
 #include "../shared/config.h"
 #include "../shared/overlay.h"
+#include "resource.h"
 
 static Overlay g_overlay;
 static HBITMAP g_bitmap;
@@ -35,10 +36,20 @@ static int init_bitmap(void) {
     const char *path = g_cfg.overlay_path[0] ? g_cfg.overlay_path : "keymap.png";
     int screen_w = GetSystemMetrics(SM_CXSCREEN);
     int screen_h = GetSystemMetrics(SM_CYSCREEN);
-    if (load_overlay_image(path, screen_w, screen_h, &g_overlay) != 0) {
-        char msg[256];
-        sprintf(msg, "Failed to load %s", path);
-        MessageBoxA(NULL, msg, "Error", MB_OK);
+    int r = load_overlay_image(path, screen_w, screen_h, &g_overlay);
+    if (r != 0 && !g_cfg.overlay_path[0]) {
+        HRSRC res = FindResourceA(NULL, MAKEINTRESOURCEA(IDR_KEYMAP), RT_RCDATA);
+        if (res) {
+            HGLOBAL data = LoadResource(NULL, res);
+            DWORD size = SizeofResource(NULL, res);
+            void *ptr = LockResource(data);
+            if (ptr && size) {
+                r = load_overlay_image_mem(ptr, (int)size, screen_w, screen_h, &g_overlay);
+            }
+        }
+    }
+    if (r != 0) {
+        MessageBoxA(NULL, "Failed to load overlay image", "Error", MB_OK);
         return 0;
     }
     apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
