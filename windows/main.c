@@ -124,6 +124,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
         g_cfg.opacity = 1.0f;
         g_cfg.invert = 0;
         g_cfg.autostart = 0;
+        strcpy(g_cfg.hotkey, "Ctrl+Alt+Shift+Slash");
+        g_cfg.persistent = 0;
         save_config(g_cfg_path, &g_cfg);
     }
     set_autostart(g_cfg.autostart);
