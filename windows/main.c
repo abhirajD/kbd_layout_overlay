@@ -7,6 +7,7 @@
 
 static Overlay g_overlay;
 static HBITMAP g_bitmap;
+static void *g_bits;
 static HWND g_hwnd;
 static Config g_cfg;
 static NOTIFYICONDATAA g_nid;
@@ -53,14 +54,14 @@ static int init_bitmap(void) {
     bi.bV5AlphaMask = 0xFF000000;
 
     HDC hdc = GetDC(NULL);
-    void *bits = NULL;
+    g_bits = NULL;
     g_bitmap = CreateDIBSection(hdc, (BITMAPINFO *)&bi, DIB_RGB_COLORS,
-                                &bits, NULL, 0);
+                                &g_bits, NULL, 0);
     if (!g_bitmap) {
         ReleaseDC(NULL, hdc);
         return 0;
     }
-    memcpy(bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+    memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
     ReleaseDC(NULL, hdc);
     return 1;
 }
@@ -86,6 +87,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (lParam == WM_RBUTTONUP) {
             HMENU menu = CreatePopupMenu();
             AppendMenuA(menu, MF_STRING | (g_cfg.autostart ? MF_CHECKED : 0), 1, "Start at login");
+            AppendMenuA(menu, MF_STRING | (g_cfg.invert ? MF_CHECKED : 0), 3, "Invert colors");
             AppendMenuA(menu, MF_STRING, 2, "Quit");
             POINT p; GetCursorPos(&p);
             SetForegroundWindow(hwnd);
@@ -107,6 +109,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             save_config(g_cfg_path, &g_cfg);
         } else if (LOWORD(wParam) == 2) {
             PostMessage(hwnd, WM_CLOSE, 0, 0);
+        } else if (LOWORD(wParam) == 3) {
+            g_cfg.invert = !g_cfg.invert;
+            apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
+            memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+            update_window();
+            save_config(g_cfg_path, &g_cfg);
         }
         break;
     case WM_DESTROY:

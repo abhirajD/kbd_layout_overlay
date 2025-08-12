@@ -142,6 +142,10 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     [startItem setTarget:self];
     [startItem setState:_cfg.autostart ? NSControlStateValueOn : NSControlStateValueOff];
     [menu addItem:startItem];
+    NSMenuItem *invertItem = [[NSMenuItem alloc] initWithTitle:@"Invert colors" action:@selector(toggleInvert:) keyEquivalent:@""];
+    [invertItem setTarget:self];
+    [invertItem setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:invertItem];
     [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@""];
     [quitItem setTarget:self];
@@ -158,6 +162,14 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
 
 - (void)quit:(id)sender {
     [NSApp terminate:nil];
+}
+
+- (void)toggleInvert:(id)sender {
+    _cfg.invert = !_cfg.invert;
+    [sender setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
+    [_overlayView cacheSampleBuffer];
+    [_overlayView setNeedsDisplay:YES];
+    save_config([_configPath fileSystemRepresentation], &_cfg);
 }
 
 - (void)setAutostart:(BOOL)enable {
