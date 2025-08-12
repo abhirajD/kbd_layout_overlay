@@ -82,10 +82,54 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     [_panel setContentView:_overlayView];
 }
 
+- (NSScreen *)targetScreen {
+    NSScreen *screen = nil;
+    NSRunningApplication *activeApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    if (activeApp) {
+        CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly |
+                                                          kCGWindowListExcludeDesktopElements,
+                                                          kCGNullWindowID);
+        NSArray *windows = CFBridgingRelease(windowList);
+        for (NSDictionary *window in windows) {
+            if ([window[(id)kCGWindowOwnerPID] intValue] != activeApp.processIdentifier) {
+                continue;
+            }
+            if ([window[(id)kCGWindowLayer] intValue] != 0) {
+                continue;
+            }
+            CGRect bounds;
+            CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)window[(id)kCGWindowBounds], &bounds);
+            for (NSScreen *s in [NSScreen screens]) {
+                if (CGRectIntersectsRect(bounds, NSRectToCGRect([s frame]))) {
+                    screen = s;
+                    break;
+                }
+            }
+            if (screen) break;
+        }
+    }
+    if (!screen) {
+        NSPoint mouse = [NSEvent mouseLocation];
+        for (NSScreen *s in [NSScreen screens]) {
+            if (NSPointInRect(mouse, [s frame])) {
+                screen = s;
+                break;
+            }
+        }
+    }
+    return screen ?: [NSScreen mainScreen];
+}
+
 - (void)togglePanel {
     if ([_panel isVisible]) {
         [_panel orderOut:nil];
     } else {
+        NSScreen *screen = [self targetScreen];
+        NSRect frame = _panel.frame;
+        NSRect screenFrame = [screen visibleFrame];
+        frame.origin.x = NSMidX(screenFrame) - NSWidth(frame) / 2.0;
+        frame.origin.y = NSMinY(screenFrame);
+        [_panel setFrame:frame display:NO];
         [_panel orderFront:nil];
     }
 }
