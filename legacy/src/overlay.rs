@@ -16,7 +16,7 @@ use winit::{
     window::{Window, WindowBuilder, WindowLevel},
 };
 
-const DEFAULT_IMAGE: &[u8] = include_bytes!("../assets/keymap.png");
+const DEFAULT_IMAGE: &[u8] = include_bytes!("../../shared/assets/keymap.png");
 
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{

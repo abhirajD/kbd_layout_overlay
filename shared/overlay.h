@@ -14,7 +14,7 @@ typedef struct {
     int channels; /* should be 4 for RGBA */
 } Overlay;
 
-int load_overlay_image(const char *path, Overlay *out);
+int load_overlay_image(const char *path, int max_width, int max_height, Overlay *out);
 void apply_opacity_inversion(Overlay *img, float opacity, int invert);
 const unsigned char *get_overlay_buffer(const Overlay *img, int *width, int *height);
 void free_overlay(Overlay *img);

@@ -15,7 +15,7 @@ shortcut. The image is centered horizontally and aligned to the bottom of the mo
 with the active window, falling back to the display under the mouse cursor. If no image is configured or the
 configured path is missing, the application looks for a `keymap.png` next to
 the executable and uses it if found. Otherwise a built-in `keymap.png`
-(742×235) from the `assets` directory is used. If a configured image cannot be
+(742×235) from the `shared/assets` directory is used. If a configured image cannot be
 loaded an error is printed and the same `keymap.png` lookup is performed before
 falling back to the built-in image.
 

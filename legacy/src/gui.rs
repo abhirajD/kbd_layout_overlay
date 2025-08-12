@@ -7,7 +7,7 @@ use image::{imageops::FilterType, RgbaImage};
 
 use crate::config::Config;
 
-const DEFAULT_IMAGE: &[u8] = include_bytes!("../assets/keymap.png");
+const DEFAULT_IMAGE: &[u8] = include_bytes!("../../shared/assets/keymap.png");
 
 pub fn run() -> Result<()> {
     let cfg = Config::load()?;

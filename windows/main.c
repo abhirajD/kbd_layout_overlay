@@ -33,7 +33,9 @@ static void set_autostart(int enable) {
 
 static int init_bitmap(void) {
     const char *path = g_cfg.overlay_path[0] ? g_cfg.overlay_path : "keymap.png";
-    if (load_overlay_image(path, &g_overlay) != 0) {
+    int screen_w = GetSystemMetrics(SM_CXSCREEN);
+    int screen_h = GetSystemMetrics(SM_CYSCREEN);
+    if (load_overlay_image(path, screen_w, screen_h, &g_overlay) != 0) {
         char msg[256];
         sprintf(msg, "Failed to load %s", path);
         MessageBoxA(NULL, msg, "Error", MB_OK);
