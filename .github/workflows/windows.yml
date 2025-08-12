@@ -1,0 +1,35 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      WINDOWS_CERT_FILE: ${{ secrets.WINDOWS_CERT_FILE }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: build_windows.bat
+        working-directory: windows
+        shell: cmd
+      - name: Sign executable
+        if: env.WINDOWS_CERT_FILE != ''
+        run: signtool sign /f "%WINDOWS_CERT_FILE%" /p "%WINDOWS_CERT_PASSWORD%" kbd_layout_overlay.exe
+        working-directory: windows
+        shell: cmd
+      - name: Create zip bundle
+        run: Compress-Archive -Path kbd_layout_overlay.exe -DestinationPath kbd_layout_overlay-windows.zip
+        working-directory: windows
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            windows/kbd_layout_overlay.exe
+            windows/kbd_layout_overlay-windows.zip
+
