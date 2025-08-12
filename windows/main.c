@@ -88,6 +88,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             HMENU menu = CreatePopupMenu();
             AppendMenuA(menu, MF_STRING | (g_cfg.autostart ? MF_CHECKED : 0), 1, "Start at login");
             AppendMenuA(menu, MF_STRING | (g_cfg.invert ? MF_CHECKED : 0), 3, "Invert colors");
+            AppendMenuA(menu, MF_STRING, 4, "Cycle opacity");
             AppendMenuA(menu, MF_STRING, 2, "Quit");
             POINT p; GetCursorPos(&p);
             SetForegroundWindow(hwnd);
@@ -111,6 +112,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             PostMessage(hwnd, WM_CLOSE, 0, 0);
         } else if (LOWORD(wParam) == 3) {
             g_cfg.invert = !g_cfg.invert;
+            apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
+            memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+            update_window();
+            save_config(g_cfg_path, &g_cfg);
+        } else if (LOWORD(wParam) == 4) {
+            float levels[] = {0.25f, 0.5f, 0.75f, 1.0f};
+            int count = sizeof(levels) / sizeof(levels[0]);
+            int next = 0;
+            for (int i = 0; i < count; i++) {
+                if (g_cfg.opacity <= levels[i] + 0.001f) {
+                    next = (i + 1) % count;
+                    break;
+                }
+            }
+            g_cfg.opacity = levels[next];
             apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
             memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
             update_window();

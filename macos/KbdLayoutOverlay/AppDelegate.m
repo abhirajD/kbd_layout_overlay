@@ -203,6 +203,9 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
     [invertItem setTarget:self];
     [invertItem setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
     [menu addItem:invertItem];
+    NSMenuItem *opacityItem = [[NSMenuItem alloc] initWithTitle:@"Cycle opacity" action:@selector(cycleOpacity:) keyEquivalent:@""];
+    [opacityItem setTarget:self];
+    [menu addItem:opacityItem];
     [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@""];
     [quitItem setTarget:self];
@@ -226,6 +229,22 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
     [sender setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
     [_overlayView cacheSampleBuffer];
     [_overlayView setNeedsDisplay:YES];
+    save_config([_configPath fileSystemRepresentation], &_cfg);
+}
+
+- (void)cycleOpacity:(id)sender {
+    float levels[] = {0.25f, 0.5f, 0.75f, 1.0f};
+    int count = sizeof(levels) / sizeof(levels[0]);
+    int next = 0;
+    for (int i = 0; i < count; i++) {
+        if (_cfg.opacity <= levels[i] + 0.001f) {
+            next = (i + 1) % count;
+            break;
+        }
+    }
+    _cfg.opacity = levels[next];
+    apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
+    [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
     save_config([_configPath fileSystemRepresentation], &_cfg);
 }
 
