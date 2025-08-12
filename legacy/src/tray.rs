@@ -9,7 +9,7 @@ use tray_icon::{
 
 use crate::{config::Config, gui};
 
-const ICON_BYTES: &[u8] = include_bytes!("../assets/keymap.png");
+const ICON_BYTES: &[u8] = include_bytes!("../../shared/assets/keymap.png");
 
 fn load_icon() -> tray_icon::Icon {
     let image = image::load_from_memory(ICON_BYTES)

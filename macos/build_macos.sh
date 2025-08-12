@@ -31,6 +31,8 @@ clang -fobjc-arc -framework Cocoa -framework Carbon \
       "$SRC_DIR/main.m" "$SRC_DIR/AppDelegate.m" "$SRC_DIR/OverlayView.m" \
       -o "$APP_DIR/Contents/MacOS/KbdLayoutOverlay"
 
+cp "$ROOT_DIR/../shared/assets/keymap.png" "$APP_DIR/Contents/MacOS/"
+
 echo "Built $APP_DIR"
 
 if [[ "$1" == "--install" ]]; then

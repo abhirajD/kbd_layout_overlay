@@ -102,16 +102,18 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
 
 - (void)createOverlay {
     const char *path = _cfg.overlay_path[0] ? _cfg.overlay_path : "keymap.png";
-    if (load_overlay_image(path, &_overlay) != 0) {
+    NSScreen *screen = [NSScreen mainScreen];
+    CGFloat scaleFactor = [screen backingScaleFactor];
+    int max_w = (int)([screen frame].size.width * scaleFactor);
+    int max_h = (int)([screen frame].size.height * scaleFactor);
+    if (load_overlay_image(path, max_w, max_h, &_overlay) != 0) {
         NSLog(@"Failed to load %s", path);
         return;
     }
     apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
 
-    NSScreen *screen = [NSScreen mainScreen];
-    CGFloat scale = [screen backingScaleFactor];
-    CGFloat width = (CGFloat)_overlay.width / scale;
-    CGFloat height = (CGFloat)_overlay.height / scale;
+    CGFloat width = (CGFloat)_overlay.width / scaleFactor;
+    CGFloat height = (CGFloat)_overlay.height / scaleFactor;
     NSRect rect = NSMakeRect(0, 0, width, height);
 
     _panel = [[NSPanel alloc] initWithContentRect:rect
