@@ -20,7 +20,7 @@ Settings are stored in a simple `key=value` file.
 
 | option        | description |
 |---------------|-------------|
-| `overlay_path`| Path to a custom image. If empty, a `keymap.png` next to the executable is used, otherwise a bundled fallback image. |
+| `overlay_path`| Path to a custom image. If empty, the program looks for a `keymap.png` next to the executable and falls back to a bundled default if none is found. |
 | `opacity`     | Overlay opacity from `0.0`–`1.0`. |
 | `invert`      | `1` inverts colors, `0` leaves them unchanged. |
 | `autostart`   | `1` launches the app at login, `0` disables autostart. |
@@ -34,7 +34,7 @@ Edit the file with any text editor:
 
 ### Replacing the overlay image
 
-Place a custom PNG named `keymap.png` next to the executable or set `overlay_path` in the configuration file to another image path. Images are automatically scaled to fit the screen.
+A default `keymap.png` is embedded in the application. To use a different layout, set `overlay_path` to another image or place a file named `keymap.png` next to the executable (`kbd_layout_overlay.exe` on Windows, `Kbd Layout Overlay.app/Contents/MacOS/` on macOS). The external image takes precedence over the bundled one. Images are automatically scaled to fit the screen.
 
 ## Autostart and Hotkeys
 
