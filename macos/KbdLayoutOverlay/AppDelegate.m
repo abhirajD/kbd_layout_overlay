@@ -6,6 +6,19 @@
 #include <string.h>
 #include <strings.h>
 
+@interface AppDelegate () {
+    EventHotKeyRef _hotKeyRef;
+    EventHandlerRef _eventHandler;
+    NSPanel *_panel;
+    OverlayView *_overlayView;
+    NSStatusItem *_statusItem;
+    Config _cfg;
+    NSString *_configPath;
+    Overlay _overlay;
+}
+- (BOOL)isPersistent;
+@end
+
 static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData);
 static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods);
 
@@ -44,16 +57,7 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
     }
 }
 
-@implementation AppDelegate {
-    EventHotKeyRef _hotKeyRef;
-    EventHandlerRef _eventHandler;
-    NSPanel *_panel;
-    OverlayView *_overlayView;
-    NSStatusItem *_statusItem;
-    Config _cfg;
-    NSString *_configPath;
-    Overlay _overlay;
-}
+@implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     _configPath = [@"~/Library/Preferences/kbd_layout_overlay.cfg" stringByExpandingTildeInPath];
@@ -237,8 +241,8 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
 - (void)toggleInvert:(id)sender {
     _cfg.invert = !_cfg.invert;
     [sender setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
-    [_overlayView cacheSampleBuffer];
-    [_overlayView setNeedsDisplay:YES];
+    apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
+    [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
     save_config([_configPath fileSystemRepresentation], &_cfg);
 }
 
@@ -256,6 +260,10 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
     apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
     [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
     save_config([_configPath fileSystemRepresentation], &_cfg);
+}
+
+- (BOOL)isPersistent {
+    return _cfg.persistent;
 }
 
 - (void)setAutostart:(BOOL)enable {
@@ -285,13 +293,13 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     if (hkCom.id != 1) return noErr;
     UInt32 kind = GetEventKind(event);
     if (kind == kEventHotKeyPressed) {
-        if (self->_cfg.persistent) {
+        if ([self isPersistent]) {
             [self togglePanel];
         } else {
             [self showPanel];
         }
     } else if (kind == kEventHotKeyReleased) {
-        if (!self->_cfg.persistent) {
+        if (![self isPersistent]) {
             [self hidePanel];
         }
     }

@@ -67,7 +67,6 @@ legacy/   - historical Rust version (unmaintained)
 ### Building
 
 ```
-make -C shared             # build common static library
 windows\build_windows.bat  # compile Windows executable (Visual Studio Developer Command Prompt)
 ./macos/build_macos.sh     # build macOS app bundle
 ```
