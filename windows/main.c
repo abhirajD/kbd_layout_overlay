@@ -158,90 +158,116 @@ static void update_window(void) {
     ReleaseDC(NULL, screen);
 }
 
+static void show_tray_menu(HWND hwnd) {
+    HMENU menu = CreatePopupMenu();
+    AppendMenuA(menu, MF_STRING | (g_cfg.autostart ? MF_CHECKED : 0), 1, "Start at login");
+    AppendMenuA(menu, MF_STRING | (g_cfg.invert ? MF_CHECKED : 0), 3, "Invert colors");
+    AppendMenuA(menu, MF_STRING, 4, "Cycle opacity");
+    AppendMenuA(menu, MF_STRING, 2, "Quit");
+    POINT p; GetCursorPos(&p);
+    SetForegroundWindow(hwnd);
+    TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, p.x, p.y, 0, hwnd, NULL);
+    DestroyMenu(menu);
+}
+
+static void on_hotkey(HWND hwnd) {
+    if (g_cfg.persistent) {
+        g_visible = !g_visible;
+        ShowWindow(hwnd, g_visible ? SW_SHOW : SW_HIDE);
+        if (g_visible) update_window();
+    } else {
+        g_hotkey_active = 1;
+        g_visible = 1;
+        ShowWindow(hwnd, SW_SHOW);
+        update_window();
+    }
+}
+
+static void on_command(HWND hwnd, WPARAM wParam) {
+    switch (LOWORD(wParam)) {
+    case 1:
+        g_cfg.autostart = !g_cfg.autostart;
+        set_autostart(g_cfg.autostart);
+        save_config(g_cfg_path, &g_cfg);
+        break;
+    case 2:
+        PostMessage(hwnd, WM_CLOSE, 0, 0);
+        break;
+    case 3:
+        g_cfg.invert = !g_cfg.invert;
+        apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
+        memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+        update_window();
+        save_config(g_cfg_path, &g_cfg);
+        break;
+    case 4: {
+        float levels[] = {0.25f, 0.5f, 0.75f, 1.0f};
+        int count = sizeof(levels) / sizeof(levels[0]);
+        int next = 0;
+        for (int i = 0; i < count; i++) {
+            if (g_cfg.opacity <= levels[i] + 0.001f) {
+                next = (i + 1) % count;
+                break;
+            }
+        }
+        g_cfg.opacity = levels[next];
+        apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
+        memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+        update_window();
+        save_config(g_cfg_path, &g_cfg);
+        break;
+    }
+    }
+}
+
+static void on_destroy(void) {
+    Shell_NotifyIconA(NIM_DELETE, &g_nid);
+    UnregisterHotKey(NULL, 1);
+    if (g_hook) UnhookWindowsHookEx(g_hook);
+    PostQuitMessage(0);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_TRAY:
-        if (lParam == WM_RBUTTONUP) {
-            HMENU menu = CreatePopupMenu();
-            AppendMenuA(menu, MF_STRING | (g_cfg.autostart ? MF_CHECKED : 0), 1, "Start at login");
-            AppendMenuA(menu, MF_STRING | (g_cfg.invert ? MF_CHECKED : 0), 3, "Invert colors");
-            AppendMenuA(menu, MF_STRING, 4, "Cycle opacity");
-            AppendMenuA(menu, MF_STRING, 2, "Quit");
-            POINT p; GetCursorPos(&p);
-            SetForegroundWindow(hwnd);
-            TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, p.x, p.y, 0, hwnd, NULL);
-            DestroyMenu(menu);
-        }
+        if (lParam == WM_RBUTTONUP) show_tray_menu(hwnd);
         break;
     case WM_HOTKEY:
-        if (wParam == 1) {
-            if (g_cfg.persistent) {
-                g_visible = !g_visible;
-                ShowWindow(hwnd, g_visible ? SW_SHOW : SW_HIDE);
-                if (g_visible) update_window();
-            } else {
-                g_hotkey_active = 1;
-                g_visible = 1;
-                ShowWindow(hwnd, SW_SHOW);
-                update_window();
-            }
-        }
+        if (wParam == 1) on_hotkey(hwnd);
         break;
     case WM_COMMAND:
-        if (LOWORD(wParam) == 1) {
-            g_cfg.autostart = !g_cfg.autostart;
-            set_autostart(g_cfg.autostart);
-            save_config(g_cfg_path, &g_cfg);
-        } else if (LOWORD(wParam) == 2) {
-            PostMessage(hwnd, WM_CLOSE, 0, 0);
-        } else if (LOWORD(wParam) == 3) {
-            g_cfg.invert = !g_cfg.invert;
-            apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
-            memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
-            update_window();
-            save_config(g_cfg_path, &g_cfg);
-        } else if (LOWORD(wParam) == 4) {
-            float levels[] = {0.25f, 0.5f, 0.75f, 1.0f};
-            int count = sizeof(levels) / sizeof(levels[0]);
-            int next = 0;
-            for (int i = 0; i < count; i++) {
-                if (g_cfg.opacity <= levels[i] + 0.001f) {
-                    next = (i + 1) % count;
-                    break;
-                }
-            }
-            g_cfg.opacity = levels[next];
-            apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
-            memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
-            update_window();
-            save_config(g_cfg_path, &g_cfg);
-        }
+        on_command(hwnd, wParam);
         break;
     case WM_DESTROY:
-        Shell_NotifyIconA(NIM_DELETE, &g_nid);
-        UnregisterHotKey(NULL, 1);
-        if (g_hook) UnhookWindowsHookEx(g_hook);
-        PostQuitMessage(0);
+        on_destroy();
         break;
+    default:
+        return DefWindowProc(hwnd, msg, wParam, lParam);
     }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    return 0;
 }
 
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow) {
+static void load_default_config(void) {
+    strcpy(g_cfg.overlay_path, "keymap.png");
+    g_cfg.opacity = 1.0f;
+    g_cfg.invert = 0;
+    g_cfg.autostart = 0;
+    strcpy(g_cfg.hotkey, "Ctrl+Alt+Shift+Slash");
+    g_cfg.persistent = 0;
+    save_config(g_cfg_path, &g_cfg);
+}
+
+static void init_config(void) {
     if (load_config(g_cfg_path, &g_cfg) != 0) {
-        strcpy(g_cfg.overlay_path, "keymap.png");
-        g_cfg.opacity = 1.0f;
-        g_cfg.invert = 0;
-        g_cfg.autostart = 0;
-        strcpy(g_cfg.hotkey, "Ctrl+Alt+Shift+Slash");
-        g_cfg.persistent = 0;
-        save_config(g_cfg_path, &g_cfg);
+        load_default_config();
     }
     if (!g_cfg.hotkey[0]) {
         strcpy(g_cfg.hotkey, "Ctrl+Alt+Shift+Slash");
     }
     set_autostart(g_cfg.autostart);
+}
 
+static int init_overlay_window(HINSTANCE hInst) {
     if (!init_bitmap()) {
         return 0;
     }
@@ -267,11 +293,23 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     lstrcpyA(g_nid.szTip, "Keyboard Layout Overlay");
     Shell_NotifyIconA(NIM_ADD, &g_nid);
 
+    return 1;
+}
+
+static void register_hotkey(void) {
     parse_hotkey_win(g_cfg.hotkey, &g_hotkey_mods, &g_hotkey_vk);
     RegisterHotKey(NULL, 1, g_hotkey_mods | MOD_NOREPEAT, g_hotkey_vk);
     if (!g_cfg.persistent) {
         g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     }
+}
+
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow) {
+    init_config();
+    if (!init_overlay_window(hInst)) {
+        return 0;
+    }
+    register_hotkey();
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
