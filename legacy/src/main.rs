@@ -58,6 +58,9 @@ struct Cli {
     /// Hotkey combination (e.g., ControlLeft+Alt+ShiftLeft+Slash)
     #[arg(long, value_delimiter = '+')]
     hotkey: Option<Vec<String>>,
+    /// Log level (error, warn, info, debug, trace)
+    #[arg(long = "log-level", alias = "logs", value_enum)]
+    log_level: Option<LogLevel>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -81,9 +84,38 @@ enum AutostartAction {
     Disable,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<LogLevel> for log::LevelFilter {
+    fn from(l: LogLevel) -> Self {
+        match l {
+            LogLevel::Error => log::LevelFilter::Error,
+            LogLevel::Warn => log::LevelFilter::Warn,
+            LogLevel::Info => log::LevelFilter::Info,
+            LogLevel::Debug => log::LevelFilter::Debug,
+            LogLevel::Trace => log::LevelFilter::Trace,
+        }
+    }
+}
+
 fn main() -> Result<()> {
-    env_logger::init();
     let cli = Cli::parse();
+    let mut cfg = config::Config::load()?;
+    let level = cli
+        .log_level
+        .map(Into::into)
+        .unwrap_or(cfg.log);
+    cfg.log = level;
+    env_logger::Builder::from_env(env_logger::Env::default())
+        .filter_level(level)
+        .init();
 
     match &cli.command {
         Some(Commands::Autostart { action }) => match action {
@@ -97,7 +129,6 @@ fn main() -> Result<()> {
             gui::run()?;
         }
         None => {
-            let mut cfg = config::Config::load()?;
             if let Some(p) = cli.image {
                 cfg.image_path = Some(p);
             }
