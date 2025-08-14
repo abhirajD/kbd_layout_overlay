@@ -153,7 +153,12 @@ static void update_window(void) {
     POINT src = {0, 0};
     POINT dst = {0, 0};
     BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    UpdateLayeredWindow(g_hwnd, screen, &dst, &size, mem, &src, 0, &bf, ULW_ALPHA);
+    if (!UpdateLayeredWindow(g_hwnd, screen, &dst, &size, mem, &src, 0, &bf, ULW_ALPHA)) {
+        DWORD err = GetLastError();
+        char buf[128];
+        snprintf(buf, sizeof(buf), "UpdateLayeredWindow failed: %lu\n", (unsigned long)err);
+        OutputDebugStringA(buf);
+    }
 
     DeleteDC(mem);
     ReleaseDC(NULL, screen);
@@ -179,10 +184,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (g_cfg.persistent) {
                 g_visible = !g_visible;
                 ShowWindow(hwnd, g_visible ? SW_SHOW : SW_HIDE);
+                if (g_visible) update_window();
             } else {
                 g_hotkey_active = 1;
                 g_visible = 1;
                 ShowWindow(hwnd, SW_SHOW);
+                update_window();
             }
         }
         break;
@@ -255,7 +262,6 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
         wc.lpszClassName, "", WS_POPUP, 0, 0, g_overlay.width, g_overlay.height,
         NULL, NULL, hInst, NULL);
 
-    update_window();
     ShowWindow(g_hwnd, SW_HIDE);
 
     g_nid.cbSize = sizeof(g_nid);
