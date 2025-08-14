@@ -1,8 +1,9 @@
 #define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "stb_image.h"
+#include "stb_image_resize.h"
 #include "overlay.h"
 #include <stdlib.h>
-#include <string.h>
 
 static int finalize_image(unsigned char *data, int width, int height,
                           int max_width, int max_height, Overlay *out) {
@@ -18,22 +19,20 @@ static int finalize_image(unsigned char *data, int width, int height,
         int new_h = (int)(out->height * scale);
         if (new_w < 1) new_w = 1;
         if (new_h < 1) new_h = 1;
+
         unsigned char *resized = malloc((size_t)new_w * new_h * 4);
         if (!resized) {
             stbi_image_free(data);
             return -1;
         }
-        float inv = 1.0f / scale;
-        for (int y = 0; y < new_h; ++y) {
-            int src_y = (int)(y * inv);
-            if (src_y >= out->height) src_y = out->height - 1;
-            for (int x = 0; x < new_w; ++x) {
-                int src_x = (int)(x * inv);
-                if (src_x >= out->width) src_x = out->width - 1;
-                memcpy(&resized[(y * new_w + x) * 4],
-                       &data[(src_y * out->width + src_x) * 4], 4);
-            }
+
+        if (!stbir_resize_uint8(data, out->width, out->height, 0,
+                                resized, new_w, new_h, 0, 4)) {
+            free(resized);
+            stbi_image_free(data);
+            return -1;
         }
+
         stbi_image_free(data);
         data = resized;
         out->width = new_w;
