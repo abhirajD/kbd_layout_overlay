@@ -16,6 +16,7 @@
     NSString *_configPath;
     Overlay _overlay;
 }
+- (BOOL)isPersistent;
 @end
 
 static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData);
@@ -261,6 +262,10 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
     save_config([_configPath fileSystemRepresentation], &_cfg);
 }
 
+- (BOOL)isPersistent {
+    return _cfg.persistent;
+}
+
 - (void)setAutostart:(BOOL)enable {
     NSString *src = [[NSBundle mainBundle] pathForResource:@"com.example.kbdlayoutoverlay" ofType:@"plist"]; 
     NSString *dst = [@"~/Library/LaunchAgents/com.example.kbdlayoutoverlay.plist" stringByExpandingTildeInPath];
@@ -288,13 +293,13 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     if (hkCom.id != 1) return noErr;
     UInt32 kind = GetEventKind(event);
     if (kind == kEventHotKeyPressed) {
-        if (self->_cfg.persistent) {
+        if ([self isPersistent]) {
             [self togglePanel];
         } else {
             [self showPanel];
         }
     } else if (kind == kEventHotKeyReleased) {
-        if (!self->_cfg.persistent) {
+        if (![self isPersistent]) {
             [self hidePanel];
         }
     }
