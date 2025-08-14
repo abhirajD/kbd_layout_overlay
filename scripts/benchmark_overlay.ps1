@@ -52,4 +52,3 @@ if (Get-Command hyperfine -ErrorAction SilentlyContinue) {
     (Measure-Command { & $benchExe } | Out-String) | Tee-Object -FilePath $outFile -Append
 }
 Write-Host "Benchmark results written to $outFile"
-
