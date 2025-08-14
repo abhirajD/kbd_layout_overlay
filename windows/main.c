@@ -15,6 +15,12 @@ static NOTIFYICONDATAA g_nid;
 static char g_cfg_path[MAX_PATH] = "config.cfg";
 #define WM_TRAY (WM_APP + 1)
 
+static UINT g_hotkey_vk;
+static UINT g_hotkey_mods;
+static int g_hotkey_active;
+static int g_visible;
+static HHOOK g_hook;
+
 static void set_autostart(int enable) {
     HKEY key;
     if (RegCreateKeyExA(HKEY_CURRENT_USER,
@@ -30,6 +36,65 @@ static void set_autostart(int enable) {
         }
         RegCloseKey(key);
     }
+}
+
+static void parse_hotkey(const char *hotkey, UINT *mods, UINT *vk) {
+    *mods = 0;
+    *vk = VK_OEM_2;
+    if (!hotkey) return;
+
+    char buf[256];
+    strncpy(buf, hotkey, sizeof(buf));
+    buf[sizeof(buf) - 1] = '\0';
+    char *token = strtok(buf, "+");
+    while (token) {
+        if (!_stricmp(token, "ctrl") || !_stricmp(token, "control")) {
+            *mods |= MOD_CONTROL;
+        } else if (!_stricmp(token, "alt") || !_stricmp(token, "option") || !_stricmp(token, "opt")) {
+            *mods |= MOD_ALT;
+        } else if (!_stricmp(token, "shift")) {
+            *mods |= MOD_SHIFT;
+        } else if (!_stricmp(token, "win") || !_stricmp(token, "windows") ||
+                   !_stricmp(token, "cmd") || !_strnicmp(token, "meta", 4)) {
+            *mods |= MOD_WIN;
+        } else {
+            size_t len = strlen(token);
+            if (len == 1) {
+                char c = token[0];
+                if (c >= 'a' && c <= 'z') *vk = 'A' + (c - 'a');
+                else if (c >= 'A' && c <= 'Z') *vk = c;
+                else if (c >= '0' && c <= '9') *vk = '0' + (c - '0');
+                else if (c == '/') *vk = VK_OEM_2;
+            } else if (!_stricmp(token, "slash")) {
+                *vk = VK_OEM_2;
+            }
+        }
+        token = strtok(NULL, "+");
+    }
+}
+
+static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode == HC_ACTION && !g_cfg.persistent && g_hotkey_active) {
+        if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+            KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
+            int hide = 0;
+            if (k->vkCode == g_hotkey_vk) hide = 1;
+            if (!hide && (g_hotkey_mods & MOD_CONTROL) &&
+                (k->vkCode == VK_LCONTROL || k->vkCode == VK_RCONTROL)) hide = 1;
+            if (!hide && (g_hotkey_mods & MOD_ALT) &&
+                (k->vkCode == VK_LMENU || k->vkCode == VK_RMENU)) hide = 1;
+            if (!hide && (g_hotkey_mods & MOD_SHIFT) &&
+                (k->vkCode == VK_LSHIFT || k->vkCode == VK_RSHIFT)) hide = 1;
+            if (!hide && (g_hotkey_mods & MOD_WIN) &&
+                (k->vkCode == VK_LWIN || k->vkCode == VK_RWIN)) hide = 1;
+            if (hide) {
+                ShowWindow(g_hwnd, SW_HIDE);
+                g_hotkey_active = 0;
+                g_visible = 0;
+            }
+        }
+    }
+    return CallNextHookEx(g_hook, nCode, wParam, lParam);
 }
 
 static int init_bitmap(void) {
@@ -111,9 +176,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         break;
     case WM_HOTKEY:
         if (wParam == 1) {
-            static int visible = 0;
-            visible = !visible;
-            ShowWindow(hwnd, visible ? SW_SHOW : SW_HIDE);
+            if (g_cfg.persistent) {
+                g_visible = !g_visible;
+                ShowWindow(hwnd, g_visible ? SW_SHOW : SW_HIDE);
+            } else {
+                g_hotkey_active = 1;
+                g_visible = 1;
+                ShowWindow(hwnd, SW_SHOW);
+            }
         }
         break;
     case WM_COMMAND:
@@ -149,6 +219,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_DESTROY:
         Shell_NotifyIconA(NIM_DELETE, &g_nid);
         UnregisterHotKey(NULL, 1);
+        if (g_hook) UnhookWindowsHookEx(g_hook);
         PostQuitMessage(0);
         break;
     }
@@ -164,6 +235,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
         strcpy(g_cfg.hotkey, "Ctrl+Alt+Shift+Slash");
         g_cfg.persistent = 0;
         save_config(g_cfg_path, &g_cfg);
+    }
+    if (!g_cfg.hotkey[0]) {
+        strcpy(g_cfg.hotkey, "Ctrl+Alt+Shift+Slash");
     }
     set_autostart(g_cfg.autostart);
 
@@ -193,7 +267,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     lstrcpyA(g_nid.szTip, "Keyboard Layout Overlay");
     Shell_NotifyIconA(NIM_ADD, &g_nid);
 
-    RegisterHotKey(NULL, 1, MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_OEM_2);
+    parse_hotkey(g_cfg.hotkey, &g_hotkey_mods, &g_hotkey_vk);
+    RegisterHotKey(NULL, 1, g_hotkey_mods | MOD_NOREPEAT, g_hotkey_vk);
+    if (!g_cfg.persistent) {
+        g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+    }
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
