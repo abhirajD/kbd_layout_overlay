@@ -16,6 +16,12 @@ To install and load the LaunchAgent for autostart, pass `--install`:
 ./build_macos.sh --install
 ```
 
+## Logging
+
+For troubleshooting, run the built application with `--log-level debug` (alias `--logs`) or set `log="debug"` in the configuration file to increase verbosity.
+Logs are written with timestamps to `kbd_overlay.log` in the current working directory.
+To display the overlay when launching from the command line, include the `--run` flag; use `--help` for usage information.
+
 ## Signing and Notarization
 
 With a Developer ID certificate the app can be signed and notarized before distribution:

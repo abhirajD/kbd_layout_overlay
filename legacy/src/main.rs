@@ -25,6 +25,8 @@ mod overlay {
     }
 }
 
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
@@ -58,6 +60,12 @@ struct Cli {
     /// Hotkey combination (e.g., ControlLeft+Alt+ShiftLeft+Slash)
     #[arg(long, value_delimiter = '+')]
     hotkey: Option<Vec<String>>,
+    /// Log level (error, warn, info, debug, trace)
+    #[arg(long = "log-level", alias = "logs", value_enum)]
+    log_level: Option<LogLevel>,
+    /// Run overlay with current settings
+    #[arg(long)]
+    run: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -81,9 +89,49 @@ enum AutostartAction {
     Disable,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl From<LogLevel> for log::LevelFilter {
+    fn from(l: LogLevel) -> Self {
+        match l {
+            LogLevel::Error => log::LevelFilter::Error,
+            LogLevel::Warn => log::LevelFilter::Warn,
+            LogLevel::Info => log::LevelFilter::Info,
+            LogLevel::Debug => log::LevelFilter::Debug,
+            LogLevel::Trace => log::LevelFilter::Trace,
+        }
+    }
+}
+
 fn main() -> Result<()> {
-    env_logger::init();
     let cli = Cli::parse();
+    let mut cfg = config::Config::load()?;
+    let level = cli.log_level.map(Into::into).unwrap_or(cfg.log);
+    cfg.log = level;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("kbd_overlay.log")?;
+    env_logger::Builder::from_env(env_logger::Env::default())
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "{} [{}] {}",
+                buf.timestamp(),
+                record.level(),
+                record.args()
+            )
+        })
+        .target(env_logger::Target::Pipe(Box::new(file)))
+        .filter_level(level)
+        .init();
 
     match &cli.command {
         Some(Commands::Autostart { action }) => match action {
@@ -97,7 +145,6 @@ fn main() -> Result<()> {
             gui::run()?;
         }
         None => {
-            let mut cfg = config::Config::load()?;
             if let Some(p) = cli.image {
                 cfg.image_path = Some(p);
             }
@@ -131,21 +178,26 @@ fn main() -> Result<()> {
             } else {
                 autostart::disable()?;
             }
-            #[cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
-            {
-                tray::run(cfg)?;
-            }
-            #[cfg(not(all(feature = "tray", any(target_os = "windows", target_os = "macos"))))]
-            {
-                overlay::run(
-                    cfg.image_path.as_deref(),
-                    cfg.width,
-                    cfg.height,
-                    cfg.opacity,
-                    cfg.invert,
-                    cfg.persist,
-                    cfg.hotkey.clone(),
-                )?;
+            if cli.run {
+                #[cfg(all(feature = "tray", any(target_os = "windows", target_os = "macos")))]
+                {
+                    tray::run(cfg)?;
+                }
+                #[cfg(not(all(
+                    feature = "tray",
+                    any(target_os = "windows", target_os = "macos")
+                )))]
+                {
+                    overlay::run(
+                        cfg.image_path.as_deref(),
+                        cfg.width,
+                        cfg.height,
+                        cfg.opacity,
+                        cfg.invert,
+                        cfg.persist,
+                        cfg.hotkey.clone(),
+                    )?;
+                }
             }
         }
     }
@@ -195,7 +247,20 @@ fn validate_hotkey(keys: &[String]) -> Result<()> {
 fn is_modifier(key: &str) -> bool {
     matches!(
         key.to_ascii_lowercase().as_str(),
-        "alt" | "option" | "opt" | "shift" | "shiftleft" | "shiftright" | "control" |
-        "ctrl" | "controlleft" | "controlright" | "meta" | "metaleft" | "metaright" | "command" | "cmd"
+        "alt"
+            | "option"
+            | "opt"
+            | "shift"
+            | "shiftleft"
+            | "shiftright"
+            | "control"
+            | "ctrl"
+            | "controlleft"
+            | "controlright"
+            | "meta"
+            | "metaleft"
+            | "metaright"
+            | "command"
+            | "cmd"
     )
 }

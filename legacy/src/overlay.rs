@@ -7,7 +7,7 @@ use image::{imageops::FilterType, RgbaImage};
 use active_win_pos_rs::get_active_window;
 use anyhow::{Context, Result};
 use display_info::DisplayInfo;
-use log::{error, warn};
+use log::{debug, error, warn};
 use mouse_position::mouse_position::Mouse;
 use winit::{
     dpi::{LogicalSize, PhysicalPosition},
@@ -51,14 +51,20 @@ pub fn run(
     _persist: bool,
     hotkey: Vec<String>,
 ) -> Result<()> {
+    let hotkey_str = hotkey.join("+");
+    let img_src = image_path
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "embedded image".into());
     let mut builder = EventLoopBuilder::<OverlayEvent>::with_user_event();
     #[cfg(target_os = "windows")]
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::{MSG, WM_HOTKEY};
         use winit::platform::windows::EventLoopBuilderExtWindows;
-        builder.with_msg_hook(|msg| unsafe {
+        let hk = hotkey_str.clone();
+        builder.with_msg_hook(move |msg| unsafe {
             let msg = &*(msg as *const MSG);
             if msg.message == WM_HOTKEY {
+                debug!("hotkey triggered: {hk}");
                 if let Some(p) = EVENT_PROXY.get() {
                     let _ = p.send_event(OverlayEvent::Toggle);
                 }
@@ -146,11 +152,13 @@ pub fn run(
         unsafe {
             RegisterHotKey(window.hwnd() as HWND, 1, mods | MOD_NOREPEAT, key);
         }
+        debug!("registered hotkey: {hotkey_str}");
     }
 
     #[cfg(target_os = "macos")]
     {
-        start_hotkey_listener(hotkey, proxy.clone());
+        start_hotkey_listener(hotkey, hotkey_str.clone(), proxy.clone());
+        debug!("registered hotkey: {hotkey_str}");
     }
 
     let mut visible = false;
@@ -163,28 +171,43 @@ pub fn run(
                     window.set_visible(true);
                     window.request_redraw();
                     visible = true;
+                    debug!("overlay shown {}x{} using {img_src}", width, height);
                 }
             }
             Event::UserEvent(OverlayEvent::Hide) => {
                 window.set_visible(false);
                 visible = false;
+                debug!("overlay hidden");
             }
             Event::UserEvent(OverlayEvent::Toggle) => {
+                debug!("overlay toggle requested (visible={visible})");
                 if visible {
                     window.set_visible(false);
                     visible = false;
+                    debug!("overlay hidden");
                 } else if buffer.lock().unwrap().is_some() {
                     bottom_center_on_target(&window, width, height);
                     window.set_visible(true);
                     window.request_redraw();
                     visible = true;
+                    debug!("overlay shown {}x{} using {img_src}", width, height);
                 }
             }
             Event::RedrawRequested(_) => {
-                if let Some(img) = &*buffer.lock().unwrap() {
-                    let mut frame = surface.buffer_mut().unwrap();
-                    frame.copy_from_slice(img);
-                    frame.present().unwrap();
+                let mut guard = buffer.lock().unwrap();
+                if let Some(img) = &*guard {
+                    match surface.buffer_mut() {
+                        Ok(mut frame) => {
+                            frame.copy_from_slice(img);
+                            match frame.present() {
+                                Ok(_) => debug!("rendered image buffer {}x{}", width, height),
+                                Err(e) => debug!("failed to render image buffer: {e}"),
+                            }
+                        }
+                        Err(e) => debug!("failed to obtain frame buffer: {e}"),
+                    }
+                } else {
+                    debug!("no image buffer to render");
                 }
             }
             Event::WindowEvent {
@@ -281,7 +304,11 @@ fn parse_hotkey_windows(keys: &[String]) -> (u32, u32) {
 }
 
 #[cfg(target_os = "macos")]
-fn start_hotkey_listener(hotkey: Vec<String>, proxy: EventLoopProxy<OverlayEvent>) {
+fn start_hotkey_listener(
+    hotkey: Vec<String>,
+    hotkey_display: String,
+    proxy: EventLoopProxy<OverlayEvent>,
+) {
     use core_foundation::base::kCFAllocatorDefault;
     use core_foundation::mach_port::CFMachPortCreateRunLoopSource;
     use core_foundation::runloop::{
@@ -301,6 +328,7 @@ fn start_hotkey_listener(hotkey: Vec<String>, proxy: EventLoopProxy<OverlayEvent
         mods: CGEventFlags,
         key: u32,
         proxy: EventLoopProxy<OverlayEvent>,
+        hotkey: String,
     }
 
     extern "C" fn handler(
@@ -317,13 +345,19 @@ fn start_hotkey_listener(hotkey: Vec<String>, proxy: EventLoopProxy<OverlayEvent
                     CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode as u64) as u32;
                 if flags.contains(data.mods) && keycode == data.key {
                     let _ = data.proxy.send_event(OverlayEvent::Toggle);
+                    log::debug!("hotkey triggered: {}", data.hotkey);
                 }
             }
             event
         }
     }
 
-    let data = Box::new(HotkeyData { mods, key, proxy });
+    let data = Box::new(HotkeyData {
+        mods,
+        key,
+        proxy,
+        hotkey: hotkey_display,
+    });
     unsafe {
         let tap = CGEventTapCreate(
             CGEventTapLocation::HID,

@@ -14,5 +14,11 @@ When a code signing certificate is available the executable can be signed with `
 signtool sign /f <path-to-cert.pfx> /p <password> kbd_layout_overlay.exe
 ```
 
+## Logging
+
+Use `--log-level debug` (alias `--logs`) or set `log="debug"` in the configuration file to enable verbose output when running the executable.
+Logs are appended with timestamps to `kbd_overlay.log` in the current working directory.
+Run the overlay from the command line with `--run`; pass `--help` to see available options.
+
 The `windows.yml` GitHub workflow will use `WINDOWS_CERT_FILE` and `WINDOWS_CERT_PASSWORD` secrets to sign automatically and will upload both the `.exe` and a zipped bundle.
 

@@ -26,6 +26,7 @@ Settings are stored in a simple `key=value` file.
 | `autostart`   | `1` launches the app at login, `0` disables autostart. |
 | `hotkey`      | `+` separated list of modifiers and key, e.g. `Ctrl+Alt+K` or `Command+Option+K`. |
 | `persistent`  | `1` toggles the overlay, `0` shows it only while keys are held. |
+| `log`         | Logging level: `error`, `warn`, `info`, `debug`, or `trace`. |
 
 Edit the file with any text editor:
 
@@ -50,6 +51,10 @@ To start the application at login, set `autostart=1` in the configuration file o
 kbd_layout_overlay autostart enable   # register
 kbd_layout_overlay autostart disable  # unregister
 ```
+
+Use `--log-level <level>` (alias `--logs`) or set `log=<level>` in the configuration file to adjust verbosity for troubleshooting.
+Logs with timestamps are appended to `kbd_overlay.log` in the current working directory.
+Run the overlay from the command line with `--run`; use `--help` to see all available options.
 
 On Windows this creates or removes a registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. On macOS a `LaunchAgents` plist is created or deleted.
 
