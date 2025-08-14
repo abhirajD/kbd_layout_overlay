@@ -4,6 +4,7 @@
 #include "stb_image_resize.h"
 #include "overlay.h"
 #include <stdlib.h>
+#include <stdio.h>
 
 static int finalize_image(unsigned char *data, int width, int height,
                           int max_width, int max_height, Overlay *out) {
@@ -23,14 +24,14 @@ static int finalize_image(unsigned char *data, int width, int height,
         unsigned char *resized = malloc((size_t)new_w * new_h * 4);
         if (!resized) {
             stbi_image_free(data);
-            return -1;
+            return OVERLAY_ERR_MEMORY;
         }
 
         if (!stbir_resize_uint8(data, out->width, out->height, 0,
                                 resized, new_w, new_h, 0, 4)) {
             free(resized);
             stbi_image_free(data);
-            return -1;
+            return OVERLAY_ERR_MEMORY;
         }
 
         stbi_image_free(data);
@@ -40,13 +41,16 @@ static int finalize_image(unsigned char *data, int width, int height,
     }
 
     out->data = data;
-    return 0;
+    return OVERLAY_OK;
 }
 
 int load_overlay_image(const char *path, int max_width, int max_height, Overlay *out) {
     int w, h, channels;
-    unsigned char *data = stbi_load(path, &w, &h, &channels, 4);
-    if (!data) return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) return OVERLAY_ERR_NOT_FOUND;
+    unsigned char *data = stbi_load_from_file(f, &w, &h, &channels, 4);
+    fclose(f);
+    if (!data) return OVERLAY_ERR_DECODE;
     return finalize_image(data, w, h, max_width, max_height, out);
 }
 
@@ -54,7 +58,7 @@ int load_overlay_image_mem(const unsigned char *buffer, int len,
                            int max_width, int max_height, Overlay *out) {
     int w, h, channels;
     unsigned char *data = stbi_load_from_memory(buffer, len, &w, &h, &channels, 4);
-    if (!data) return -1;
+    if (!data) return OVERLAY_ERR_DECODE;
     return finalize_image(data, w, h, max_width, max_height, out);
 }
 
