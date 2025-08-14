@@ -27,8 +27,10 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-clang -fobjc-arc -framework Cocoa -framework Carbon \
+clang -fobjc-arc -O2 -I "$ROOT_DIR" \
       "$SRC_DIR/main.m" "$SRC_DIR/AppDelegate.m" "$SRC_DIR/OverlayView.m" \
+      "$ROOT_DIR/../shared/config.c" "$ROOT_DIR/../shared/overlay.c" \
+      -framework Cocoa -framework Carbon \
       -o "$APP_DIR/Contents/MacOS/KbdLayoutOverlay"
 
 cp "$ROOT_DIR/../shared/assets/keymap.png" "$APP_DIR/Contents/Resources/"
