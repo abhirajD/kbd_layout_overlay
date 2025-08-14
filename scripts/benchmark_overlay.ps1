@@ -2,6 +2,18 @@ $ErrorActionPreference = 'Stop'
 $root = (Get-Item "$PSScriptRoot/..\").FullName
 Set-Location $root
 
+# Ensure MSVC tools are available
+$vsPath = & vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (-not $vsPath) {
+    throw 'MSVC build tools not found'
+}
+$vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+    if ($_ -match '^(.*?)=(.*)$') {
+        Set-Item -Path "Env:$($matches[1])" -Value $matches[2]
+    }
+}
+
 # Build the project
 & "$root\windows\build_windows.bat"
 
