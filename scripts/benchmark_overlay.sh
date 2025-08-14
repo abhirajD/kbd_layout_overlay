@@ -8,7 +8,9 @@ cd "$ROOT_DIR"
 ./macos/build_macos.sh
 
 # Create temporary benchmark program for apply_opacity_inversion
-BENCH_C=$(mktemp)
+BENCH_C=$(mktemp "${TMPDIR:-/tmp}/benchXXXXXX.c")
+BENCH_EXE=$(mktemp "${TMPDIR:-/tmp}/benchXXXXXX")
+trap 'rm -f "$BENCH_C" "$BENCH_EXE"' EXIT
 cat > "$BENCH_C" <<'C_EOF'
 #include "overlay.h"
 #include <stdlib.h>
@@ -31,7 +33,6 @@ int main(void) {
 }
 C_EOF
 
-BENCH_EXE=$(mktemp)
 cc -O2 -std=c99 "$BENCH_C" "$ROOT_DIR/shared/overlay.c" -I"$ROOT_DIR/shared" -o "$BENCH_EXE"
 
 OUT_FILE="$ROOT_DIR/benchmark_results.txt"
