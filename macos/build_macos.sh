@@ -30,6 +30,7 @@ PLIST
 clang -fobjc-arc -O2 -I "$ROOT_DIR" \
       "$SRC_DIR/main.m" "$SRC_DIR/AppDelegate.m" "$SRC_DIR/OverlayView.m" \
       "$ROOT_DIR/../shared/config.c" "$ROOT_DIR/../shared/overlay.c" \
+      "$ROOT_DIR/../shared/hotkey.c" \
       -framework Cocoa -framework Carbon \
       -o "$APP_DIR/Contents/MacOS/KbdLayoutOverlay"
 

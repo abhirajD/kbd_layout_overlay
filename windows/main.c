@@ -4,6 +4,7 @@
 #include <string.h>
 #include "../shared/config.h"
 #include "../shared/overlay.h"
+#include "../shared/hotkey.h"
 #include "resource.h"
 
 static Overlay g_overlay;
@@ -38,39 +39,20 @@ static void set_autostart(int enable) {
     }
 }
 
-static void parse_hotkey(const char *hotkey, UINT *mods, UINT *vk) {
-    *mods = 0;
-    *vk = VK_OEM_2;
-    if (!hotkey) return;
+static void parse_hotkey_win(const char *hotkey, UINT *mods, UINT *vk) {
+    hotkey_t hk;
+    parse_hotkey(hotkey, &hk);
 
-    char buf[256];
-    strncpy(buf, hotkey, sizeof(buf));
-    buf[sizeof(buf) - 1] = '\0';
-    char *token = strtok(buf, "+");
-    while (token) {
-        if (!_stricmp(token, "ctrl") || !_stricmp(token, "control")) {
-            *mods |= MOD_CONTROL;
-        } else if (!_stricmp(token, "alt") || !_stricmp(token, "option") || !_stricmp(token, "opt")) {
-            *mods |= MOD_ALT;
-        } else if (!_stricmp(token, "shift")) {
-            *mods |= MOD_SHIFT;
-        } else if (!_stricmp(token, "win") || !_stricmp(token, "windows") ||
-                   !_stricmp(token, "cmd") || !_strnicmp(token, "meta", 4)) {
-            *mods |= MOD_WIN;
-        } else {
-            size_t len = strlen(token);
-            if (len == 1) {
-                char c = token[0];
-                if (c >= 'a' && c <= 'z') *vk = 'A' + (c - 'a');
-                else if (c >= 'A' && c <= 'Z') *vk = c;
-                else if (c >= '0' && c <= '9') *vk = '0' + (c - '0');
-                else if (c == '/') *vk = VK_OEM_2;
-            } else if (!_stricmp(token, "slash")) {
-                *vk = VK_OEM_2;
-            }
-        }
-        token = strtok(NULL, "+");
-    }
+    *mods = 0;
+    if (hk.mods & HOTKEY_MOD_CTRL) *mods |= MOD_CONTROL;
+    if (hk.mods & HOTKEY_MOD_ALT) *mods |= MOD_ALT;
+    if (hk.mods & HOTKEY_MOD_SHIFT) *mods |= MOD_SHIFT;
+    if (hk.mods & HOTKEY_MOD_SUPER) *mods |= MOD_WIN;
+
+    if (hk.key >= 'A' && hk.key <= 'Z') *vk = hk.key;
+    else if (hk.key >= '0' && hk.key <= '9') *vk = hk.key;
+    else if (hk.key == '/') *vk = VK_OEM_2;
+    else *vk = VK_OEM_2;
 }
 
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -273,7 +255,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     lstrcpyA(g_nid.szTip, "Keyboard Layout Overlay");
     Shell_NotifyIconA(NIM_ADD, &g_nid);
 
-    parse_hotkey(g_cfg.hotkey, &g_hotkey_mods, &g_hotkey_vk);
+    parse_hotkey_win(g_cfg.hotkey, &g_hotkey_mods, &g_hotkey_vk);
     RegisterHotKey(NULL, 1, g_hotkey_mods | MOD_NOREPEAT, g_hotkey_vk);
     if (!g_cfg.persistent) {
         g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);

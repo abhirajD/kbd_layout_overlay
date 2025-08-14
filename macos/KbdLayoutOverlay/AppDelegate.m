@@ -3,6 +3,7 @@
 #import "OverlayView.h"
 #import "../shared/config.h"
 #import "../shared/overlay.h"
+#import "../shared/hotkey.h"
 #include <string.h>
 #include <strings.h>
 
@@ -20,41 +21,22 @@
 @end
 
 static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData);
-static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods);
+static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods);
 
-static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
-    *keyCode = kVK_ANSI_Slash;
+static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
+    hotkey_t hk;
+    parse_hotkey(hotkey, &hk);
+
     *mods = 0;
-    if (!hotkey) return;
-    char buf[256];
-    strncpy(buf, hotkey, sizeof(buf));
-    buf[sizeof(buf) - 1] = '\0';
-    char *token = strtok(buf, "+");
-    while (token) {
-        if (!strcasecmp(token, "cmd") || !strcasecmp(token, "command") ||
-            !strncasecmp(token, "meta", 4)) {
-            *mods |= cmdKey;
-        } else if (!strcasecmp(token, "ctrl") || !strcasecmp(token, "control") ||
-                   !strncasecmp(token, "control", 7)) {
-            *mods |= controlKey;
-        } else if (!strcasecmp(token, "alt") || !strcasecmp(token, "option") ||
-                   !strcasecmp(token, "opt")) {
-            *mods |= optionKey;
-        } else if (!strcasecmp(token, "shift")) {
-            *mods |= shiftKey;
-        } else {
-            if (strlen(token) == 1) {
-                char c = token[0];
-                if (c >= 'a' && c <= 'z') *keyCode = kVK_ANSI_A + (c - 'a');
-                else if (c >= 'A' && c <= 'Z') *keyCode = kVK_ANSI_A + (c - 'A');
-                else if (c >= '0' && c <= '9') *keyCode = kVK_ANSI_0 + (c - '0');
-                else if (c == '/') *keyCode = kVK_ANSI_Slash;
-            } else if (!strcasecmp(token, "slash")) {
-                *keyCode = kVK_ANSI_Slash;
-            }
-        }
-        token = strtok(NULL, "+");
-    }
+    if (hk.mods & HOTKEY_MOD_SUPER) *mods |= cmdKey;
+    if (hk.mods & HOTKEY_MOD_CTRL) *mods |= controlKey;
+    if (hk.mods & HOTKEY_MOD_ALT) *mods |= optionKey;
+    if (hk.mods & HOTKEY_MOD_SHIFT) *mods |= shiftKey;
+
+    if (hk.key >= 'A' && hk.key <= 'Z') *keyCode = kVK_ANSI_A + (hk.key - 'A');
+    else if (hk.key >= '0' && hk.key <= '9') *keyCode = kVK_ANSI_0 + (hk.key - '0');
+    else if (hk.key == '/') *keyCode = kVK_ANSI_Slash;
+    else *keyCode = kVK_ANSI_Slash;
 }
 
 @implementation AppDelegate
@@ -85,7 +67,7 @@ static void parseHotkey(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
     InstallApplicationEventHandler(&hotKeyHandler, 2, eventTypes, (__bridge void *)self, &_eventHandler);
 
     UInt32 keyCode = 0, mods = 0;
-    parseHotkey(_cfg.hotkey, &keyCode, &mods);
+    parseHotkeyCarbon(_cfg.hotkey, &keyCode, &mods);
     EventHotKeyID hotKeyID;
     hotKeyID.signature = 'kblo';
     hotKeyID.id = 1;
