@@ -1,0 +1,34 @@
+name: Performance Benchmark
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  benchmark:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install hyperfine
+        run: brew install hyperfine
+      - name: Run benchmark
+        run: scripts/benchmark_overlay.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: overlay-benchmark
+          path: benchmark_results.txt
+
+  benchmark-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install hyperfine
+        run: choco install hyperfine -y
+      - name: Run benchmark
+        run: scripts/benchmark_overlay.ps1
+        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: overlay-benchmark-windows
+          path: benchmark_results.txt
