@@ -18,6 +18,8 @@ pub struct Config {
     pub hotkey: Vec<String>,
     #[serde(default)]
     pub autostart: bool,
+    #[serde(default = "default_log")]
+    pub log: log::LevelFilter,
 }
 
 impl Default for Config {
@@ -31,6 +33,7 @@ impl Default for Config {
             persist: false,
             hotkey: default_hotkey(),
             autostart: false,
+            log: default_log(),
         }
     }
 }
@@ -42,6 +45,10 @@ fn default_hotkey() -> Vec<String> {
         "ShiftLeft".into(),
         "Slash".into(),
     ]
+}
+
+fn default_log() -> log::LevelFilter {
+    log::LevelFilter::Info
 }
 
 impl Config {
