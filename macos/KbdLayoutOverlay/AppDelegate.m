@@ -22,6 +22,8 @@
 
 static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData);
 static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods);
+static void onHotKeyPressed(AppDelegate *self);
+static void onHotKeyReleased(AppDelegate *self);
 
 static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods) {
     hotkey_t hk;
@@ -42,37 +44,10 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-    _configPath = [@"~/Library/Preferences/kbd_layout_overlay.cfg" stringByExpandingTildeInPath];
-    if (load_config([_configPath fileSystemRepresentation], &_cfg) != 0) {
-        strcpy(_cfg.overlay_path, "keymap.png");
-        _cfg.opacity = 1.0f;
-        _cfg.invert = 0;
-        _cfg.autostart = 0;
-        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
-        _cfg.persistent = 0;
-        save_config([_configPath fileSystemRepresentation], &_cfg);
-    }
-    if (!_cfg.hotkey[0]) {
-        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
-    }
-
+    [self loadConfiguration];
     [self createOverlay];
     [self setupStatusItem];
-
-    EventTypeSpec eventTypes[2];
-    eventTypes[0].eventClass = kEventClassKeyboard;
-    eventTypes[0].eventKind = kEventHotKeyPressed;
-    eventTypes[1].eventClass = kEventClassKeyboard;
-    eventTypes[1].eventKind = kEventHotKeyReleased;
-    InstallApplicationEventHandler(&hotKeyHandler, 2, eventTypes, (__bridge void *)self, &_eventHandler);
-
-    UInt32 keyCode = 0, mods = 0;
-    parseHotkeyCarbon(_cfg.hotkey, &keyCode, &mods);
-    EventHotKeyID hotKeyID;
-    hotKeyID.signature = 'kblo';
-    hotKeyID.id = 1;
-    RegisterEventHotKey(keyCode, mods, hotKeyID, GetApplicationEventTarget(), 0, &_hotKeyRef);
-
+    [self registerHotkey];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 }
 
@@ -122,6 +97,26 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     _overlayView = [[OverlayView alloc] initWithFrame:rect];
     [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
     [_panel setContentView:_overlayView];
+}
+
+- (NSMenu *)buildStatusMenu {
+    NSMenu *menu = [[NSMenu alloc] init];
+    NSMenuItem *startItem = [[NSMenuItem alloc] initWithTitle:@"Start at login" action:@selector(toggleAutostart:) keyEquivalent:@""];
+    [startItem setTarget:self];
+    [startItem setState:_cfg.autostart ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:startItem];
+    NSMenuItem *invertItem = [[NSMenuItem alloc] initWithTitle:@"Invert colors" action:@selector(toggleInvert:) keyEquivalent:@""];
+    [invertItem setTarget:self];
+    [invertItem setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:invertItem];
+    NSMenuItem *opacityItem = [[NSMenuItem alloc] initWithTitle:@"Cycle opacity" action:@selector(cycleOpacity:) keyEquivalent:@""];
+    [opacityItem setTarget:self];
+    [menu addItem:opacityItem];
+    [menu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@""];
+    [quitItem setTarget:self];
+    [menu addItem:quitItem];
+    return menu;
 }
 
 - (NSScreen *)targetScreen {
@@ -190,23 +185,7 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
 - (void)setupStatusItem {
     _statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength];
     _statusItem.button.title = @"KLO";
-    NSMenu *menu = [[NSMenu alloc] init];
-    NSMenuItem *startItem = [[NSMenuItem alloc] initWithTitle:@"Start at login" action:@selector(toggleAutostart:) keyEquivalent:@""];
-    [startItem setTarget:self];
-    [startItem setState:_cfg.autostart ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:startItem];
-    NSMenuItem *invertItem = [[NSMenuItem alloc] initWithTitle:@"Invert colors" action:@selector(toggleInvert:) keyEquivalent:@""];
-    [invertItem setTarget:self];
-    [invertItem setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:invertItem];
-    NSMenuItem *opacityItem = [[NSMenuItem alloc] initWithTitle:@"Cycle opacity" action:@selector(cycleOpacity:) keyEquivalent:@""];
-    [opacityItem setTarget:self];
-    [menu addItem:opacityItem];
-    [menu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@""];
-    [quitItem setTarget:self];
-    [menu addItem:quitItem];
-    _statusItem.menu = menu;
+    _statusItem.menu = [self buildStatusMenu];
 }
 
 - (void)toggleAutostart:(id)sender {
@@ -275,15 +254,55 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, v
     if (hkCom.id != 1) return noErr;
     UInt32 kind = GetEventKind(event);
     if (kind == kEventHotKeyPressed) {
-        if ([self isPersistent]) {
-            [self togglePanel];
-        } else {
-            [self showPanel];
-        }
+        onHotKeyPressed(self);
     } else if (kind == kEventHotKeyReleased) {
-        if (![self isPersistent]) {
-            [self hidePanel];
-        }
+        onHotKeyReleased(self);
     }
     return noErr;
+}
+
+static void onHotKeyPressed(AppDelegate *self) {
+    if ([self isPersistent]) {
+        [self togglePanel];
+    } else {
+        [self showPanel];
+    }
+}
+
+static void onHotKeyReleased(AppDelegate *self) {
+    if (![self isPersistent]) {
+        [self hidePanel];
+    }
+}
+
+- (void)loadConfiguration {
+    _configPath = [@"~/Library/Preferences/kbd_layout_overlay.cfg" stringByExpandingTildeInPath];
+    if (load_config([_configPath fileSystemRepresentation], &_cfg) != 0) {
+        strcpy(_cfg.overlay_path, "keymap.png");
+        _cfg.opacity = 1.0f;
+        _cfg.invert = 0;
+        _cfg.autostart = 0;
+        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
+        _cfg.persistent = 0;
+        save_config([_configPath fileSystemRepresentation], &_cfg);
+    }
+    if (!_cfg.hotkey[0]) {
+        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
+    }
+}
+
+- (void)registerHotkey {
+    EventTypeSpec eventTypes[2];
+    eventTypes[0].eventClass = kEventClassKeyboard;
+    eventTypes[0].eventKind = kEventHotKeyPressed;
+    eventTypes[1].eventClass = kEventClassKeyboard;
+    eventTypes[1].eventKind = kEventHotKeyReleased;
+    InstallApplicationEventHandler(&hotKeyHandler, 2, eventTypes, (__bridge void *)self, &_eventHandler);
+
+    UInt32 keyCode = 0, mods = 0;
+    parseHotkeyCarbon(_cfg.hotkey, &keyCode, &mods);
+    EventHotKeyID hotKeyID;
+    hotKeyID.signature = 'kblo';
+    hotKeyID.id = 1;
+    RegisterEventHotKey(keyCode, mods, hotKeyID, GetApplicationEventTarget(), 0, &_hotKeyRef);
 }
