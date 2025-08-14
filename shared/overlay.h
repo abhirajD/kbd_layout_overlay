@@ -14,6 +14,13 @@ typedef struct {
     int channels; /* should be 4 for RGBA */
 } Overlay;
 
+enum {
+    OVERLAY_OK = 0,
+    OVERLAY_ERR_MEMORY = -1,
+    OVERLAY_ERR_NOT_FOUND = -2,
+    OVERLAY_ERR_DECODE = -3
+};
+
 int load_overlay_image(const char *path, int max_width, int max_height, Overlay *out);
 int load_overlay_image_mem(const unsigned char *buffer, int len,
                            int max_width, int max_height, Overlay *out);

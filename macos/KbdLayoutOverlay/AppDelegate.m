@@ -88,10 +88,12 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
 
 - (void)createOverlay {
     const char *path = NULL;
+    int triedLocal = 0;
     if (_cfg.overlay_path[0]) {
         path = _cfg.overlay_path;
     } else if ([[NSFileManager defaultManager] fileExistsAtPath:@"keymap.png"]) {
         path = "keymap.png";
+        triedLocal = 1;
     } else {
         NSString *resPath = [[NSBundle mainBundle] pathForResource:@"keymap" ofType:@"png"];
         path = resPath ? [resPath fileSystemRepresentation] : "keymap.png";
@@ -100,9 +102,25 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     CGFloat scaleFactor = [screen backingScaleFactor];
     int max_w = (int)([screen frame].size.width * scaleFactor);
     int max_h = (int)([screen frame].size.height * scaleFactor);
-    if (load_overlay_image(path, max_w, max_h, &_overlay) != 0) {
-        NSLog(@"Failed to load %s", path);
-        return;
+    int r = load_overlay_image(path, max_w, max_h, &_overlay);
+    if (r != OVERLAY_OK) {
+        NSString *reason = (r == OVERLAY_ERR_NOT_FOUND) ? @"Overlay image not found" : @"Failed to decode overlay image";
+        NSString *msg = [NSString stringWithFormat:@"%@: %s", reason, path];
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:msg];
+        [alert runModal];
+        if (!_cfg.overlay_path[0] && triedLocal) {
+            NSString *resPath = [[NSBundle mainBundle] pathForResource:@"keymap" ofType:@"png"];
+            if (resPath) {
+                const char *res = [resPath fileSystemRepresentation];
+                r = load_overlay_image(res, max_w, max_h, &_overlay);
+                if (r != OVERLAY_OK) return;
+            } else {
+                return;
+            }
+        } else {
+            return;
+        }
     }
     apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
 
