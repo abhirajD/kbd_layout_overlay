@@ -263,6 +263,40 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     }
 }
 
+// Load configuration from disk or create defaults if missing
+- (void)loadConfiguration {
+    _configPath = [@"~/Library/Preferences/kbd_layout_overlay.cfg" stringByExpandingTildeInPath];
+    if (load_config([_configPath fileSystemRepresentation], &_cfg) != 0) {
+        strcpy(_cfg.overlay_path, "keymap.png");
+        _cfg.opacity = 1.0f;
+        _cfg.invert = 0;
+        _cfg.autostart = 0;
+        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
+        _cfg.persistent = 0;
+        save_config([_configPath fileSystemRepresentation], &_cfg);
+    }
+    if (!_cfg.hotkey[0]) {
+        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
+    }
+}
+
+// Register a global hotkey using the configured shortcut
+- (void)registerHotkey {
+    EventTypeSpec eventTypes[2];
+    eventTypes[0].eventClass = kEventClassKeyboard;
+    eventTypes[0].eventKind = kEventHotKeyPressed;
+    eventTypes[1].eventClass = kEventClassKeyboard;
+    eventTypes[1].eventKind = kEventHotKeyReleased;
+    InstallApplicationEventHandler(&hotKeyHandler, 2, eventTypes, (__bridge void *)self, &_eventHandler);
+
+    UInt32 keyCode = 0, mods = 0;
+    parseHotkeyCarbon(_cfg.hotkey, &keyCode, &mods);
+    EventHotKeyID hotKeyID;
+    hotKeyID.signature = 'kblo';
+    hotKeyID.id = 1;
+    RegisterEventHotKey(keyCode, mods, hotKeyID, GetApplicationEventTarget(), 0, &_hotKeyRef);
+}
+
 @end
 
 static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData) {
@@ -291,36 +325,4 @@ static void onHotKeyReleased(AppDelegate *self) {
     if (![self isPersistent]) {
         [self hidePanel];
     }
-}
-
-- (void)loadConfiguration {
-    _configPath = [@"~/Library/Preferences/kbd_layout_overlay.cfg" stringByExpandingTildeInPath];
-    if (load_config([_configPath fileSystemRepresentation], &_cfg) != 0) {
-        strcpy(_cfg.overlay_path, "keymap.png");
-        _cfg.opacity = 1.0f;
-        _cfg.invert = 0;
-        _cfg.autostart = 0;
-        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
-        _cfg.persistent = 0;
-        save_config([_configPath fileSystemRepresentation], &_cfg);
-    }
-    if (!_cfg.hotkey[0]) {
-        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
-    }
-}
-
-- (void)registerHotkey {
-    EventTypeSpec eventTypes[2];
-    eventTypes[0].eventClass = kEventClassKeyboard;
-    eventTypes[0].eventKind = kEventHotKeyPressed;
-    eventTypes[1].eventClass = kEventClassKeyboard;
-    eventTypes[1].eventKind = kEventHotKeyReleased;
-    InstallApplicationEventHandler(&hotKeyHandler, 2, eventTypes, (__bridge void *)self, &_eventHandler);
-
-    UInt32 keyCode = 0, mods = 0;
-    parseHotkeyCarbon(_cfg.hotkey, &keyCode, &mods);
-    EventHotKeyID hotKeyID;
-    hotKeyID.signature = 'kblo';
-    hotKeyID.id = 1;
-    RegisterEventHotKey(keyCode, mods, hotKeyID, GetApplicationEventTarget(), 0, &_hotKeyRef);
 }

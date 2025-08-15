@@ -15,7 +15,8 @@ static int finalize_image(unsigned char *data, int width, int height,
     float scale_w = (float)max_width / (float)out->width;
     float scale_h = (float)max_height / (float)out->height;
     float scale = scale_w < scale_h ? scale_w : scale_h;
-    if (scale < 1.0f) {
+
+    if (scale != 1.0f) {
         int new_w = (int)(out->width * scale);
         int new_h = (int)(out->height * scale);
         if (new_w < 1) new_w = 1;

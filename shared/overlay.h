@@ -21,6 +21,8 @@ enum {
     OVERLAY_ERR_DECODE = -3
 };
 
+/* Load an image and scale it to fit within max_width/max_height while
+   preserving aspect ratio. */
 int load_overlay_image(const char *path, int max_width, int max_height, Overlay *out);
 int load_overlay_image_mem(const unsigned char *buffer, int len,
                            int max_width, int max_height, Overlay *out);
