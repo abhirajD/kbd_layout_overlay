@@ -27,11 +27,16 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Convert PNG to C header for embedding
+xxd -i "$ROOT_DIR/../shared/assets/keymap.png" > "$ROOT_DIR/keymap_data.h"
+sed -i '' 's/unsigned char .*keymap_png\[\]/unsigned char keymap_png[]/' "$ROOT_DIR/keymap_data.h"
+sed -i '' 's/unsigned int .*keymap_png_len/unsigned int keymap_png_len/' "$ROOT_DIR/keymap_data.h"
+
 clang -fobjc-arc -O2 -I "$ROOT_DIR" \
       "$SRC_DIR/main.m" "$SRC_DIR/AppDelegate.m" "$SRC_DIR/OverlayView.m" \
       "$ROOT_DIR/../shared/config.c" "$ROOT_DIR/../shared/overlay.c" \
-      "$ROOT_DIR/../shared/hotkey.c" \
-      -framework Cocoa -framework Carbon \
+      "$ROOT_DIR/../shared/hotkey.c" "$ROOT_DIR/../shared/monitor.c" \
+      -framework Cocoa -framework Carbon -framework ApplicationServices \
       -o "$APP_DIR/Contents/MacOS/KbdLayoutOverlay"
 
 cp "$ROOT_DIR/../shared/assets/keymap.png" "$APP_DIR/Contents/Resources/"

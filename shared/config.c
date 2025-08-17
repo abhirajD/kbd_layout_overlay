@@ -23,6 +23,7 @@ int load_config(const char *path, Config *cfg) {
     cfg->autostart = 0;
     cfg->hotkey[0] = '\0';
     cfg->persistent = 0;
+    cfg->monitor = 0; /* auto by default */
     char line[512];
     while (fgets(line, sizeof(line), f)) {
         trim(line);
@@ -48,6 +49,8 @@ int load_config(const char *path, Config *cfg) {
             cfg->hotkey[sizeof(cfg->hotkey) - 1] = '\0';
         } else if (strcmp(key, "persistent") == 0) {
             cfg->persistent = atoi(val);
+        } else if (strcmp(key, "monitor") == 0) {
+            cfg->monitor = atoi(val);
         }
     }
     fclose(f);
@@ -63,6 +66,7 @@ int save_config(const char *path, const Config *cfg) {
     fprintf(f, "autostart=%d\n", cfg->autostart);
     fprintf(f, "hotkey=%s\n", cfg->hotkey);
     fprintf(f, "persistent=%d\n", cfg->persistent);
+    fprintf(f, "monitor=%d\n", cfg->monitor);
     fclose(f);
     return 0;
 }

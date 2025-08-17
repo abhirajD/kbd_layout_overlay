@@ -3,13 +3,25 @@
 
 @interface OverlayView ()
 @property (nonatomic) CGImageRef image;
+@property (nonatomic) CGColorSpaceRef colorSpace;
 @end
 
 @implementation OverlayView
 
+- (instancetype)initWithFrame:(NSRect)frameRect {
+    self = [super initWithFrame:frameRect];
+    if (self) {
+        _colorSpace = CGColorSpaceCreateDeviceRGB();
+    }
+    return self;
+}
+
 - (void)dealloc {
     if (_image) {
         CGImageRelease(_image);
+    }
+    if (_colorSpace) {
+        CGColorSpaceRelease(_colorSpace);
     }
 }
 
@@ -18,14 +30,23 @@
         CGImageRelease(_image);
         _image = NULL;
     }
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    
     CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, data,
         (size_t)width * height * 4, NULL);
-    _image = CGImageCreate(width, height, 8, 32, width * 4, colorSpace,
+    _image = CGImageCreate(width, height, 8, 32, width * 4, _colorSpace,
         kCGBitmapByteOrderDefault | kCGImageAlphaPremultipliedLast,
         provider, NULL, false, kCGRenderingIntentDefault);
-    CGColorSpaceRelease(colorSpace);
     CGDataProviderRelease(provider);
+    [self setNeedsDisplay:YES];
+}
+
+- (void)setPrecomputedImage:(CGImageRef)cgImage {
+    if (_image) {
+        CGImageRelease(_image);
+        _image = NULL;
+    }
+    
+    _image = CGImageRetain(cgImage);
     [self setNeedsDisplay:YES];
 }
 

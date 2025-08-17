@@ -5,12 +5,18 @@
 #include "../shared/config.h"
 #include "../shared/overlay.h"
 #include "../shared/hotkey.h"
+#include "../shared/monitor.h"
 #include "resource.h"
 
 static Overlay g_overlay;
+static OverlayCache g_cache;
 static HBITMAP g_bitmap;
 static void *g_bits;
 static HWND g_hwnd;
+
+// Cached graphics resources
+static HDC g_screen_dc = NULL;
+static HDC g_mem_dc = NULL;
 static Config g_cfg;
 static NOTIFYICONDATAA g_nid;
 static char g_cfg_path[MAX_PATH] = "config.cfg";
@@ -79,10 +85,42 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
     return CallNextHookEx(g_hook, nCode, wParam, lParam);
 }
 
+static int get_target_monitor_info(MonitorInfo *info) {
+    if (g_cfg.monitor == 0) {
+        // Auto: use active monitor
+        return get_active_monitor(info);
+    } else if (g_cfg.monitor == 1) {
+        // Primary monitor
+        return get_primary_monitor(info);
+    } else {
+        // Specific monitor (2, 3, etc.)
+        if (get_monitor_info(g_cfg.monitor, info) == 0) {
+            return 0;
+        }
+    }
+    
+    // Fallback to primary monitor
+    return get_primary_monitor(info);
+}
+
+static int get_target_monitor_size(int *width, int *height) {
+    MonitorInfo info;
+    if (get_target_monitor_info(&info) == 0) {
+        *width = info.width;
+        *height = info.height;
+        return 0;
+    }
+    
+    // Last resort fallback
+    *width = GetSystemMetrics(SM_CXSCREEN);
+    *height = GetSystemMetrics(SM_CYSCREEN);
+    return 0;
+}
+
 static int init_bitmap(void) {
     const char *path = g_cfg.overlay_path[0] ? g_cfg.overlay_path : "keymap.png";
-    int screen_w = GetSystemMetrics(SM_CXSCREEN);
-    int screen_h = GetSystemMetrics(SM_CYSCREEN);
+    int screen_w, screen_h;
+    get_target_monitor_size(&screen_w, &screen_h);
     int r = load_overlay_image(path, screen_w, screen_h, &g_overlay);
     if (r != OVERLAY_OK) {
         const char *fmt;
@@ -95,15 +133,14 @@ static int init_bitmap(void) {
         char buf[256];
         snprintf(buf, sizeof(buf), fmt, path);
         MessageBoxA(NULL, buf, "Error", MB_OK);
-        if (!g_cfg.overlay_path[0]) {
-            HRSRC res = FindResourceA(NULL, MAKEINTRESOURCEA(IDR_KEYMAP), RT_RCDATA);
-            if (res) {
-                HGLOBAL data = LoadResource(NULL, res);
-                DWORD size = SizeofResource(NULL, res);
-                void *ptr = LockResource(data);
-                if (ptr && size) {
-                    r = load_overlay_image_mem(ptr, (int)size, screen_w, screen_h, &g_overlay);
-                }
+        // Try embedded resource as fallback regardless of path configuration
+        HRSRC res = FindResourceA(NULL, MAKEINTRESOURCEA(IDR_KEYMAP), RT_RCDATA);
+        if (res) {
+            HGLOBAL data = LoadResource(NULL, res);
+            DWORD size = SizeofResource(NULL, res);
+            void *ptr = LockResource(data);
+            if (ptr && size) {
+                r = load_overlay_image_mem(ptr, (int)size, screen_w, screen_h, &g_overlay);
             }
         }
         if (r != OVERLAY_OK) {
@@ -111,12 +148,26 @@ static int init_bitmap(void) {
             return 0;
         }
     }
-    apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
+    // Initialize cache asynchronously for faster startup
+    if (init_overlay_cache_async(&g_cache, &g_overlay) != OVERLAY_OK) {
+        // Fallback to synchronous cache if async fails
+        if (init_overlay_cache(&g_cache, &g_overlay) != OVERLAY_OK) {
+            MessageBoxA(NULL, "Failed to initialize image cache", "Error", MB_OK);
+            return 0;
+        }
+    }
+
+    // Get initial cached variation (may not be ready yet if async)
+    const Overlay *cached = get_cached_variation(&g_cache, g_cfg.opacity, g_cfg.invert);
+    if (!cached) {
+        // Cache not ready yet - use original image temporarily
+        cached = &g_overlay;
+    }
 
     BITMAPV5HEADER bi = {0};
     bi.bV5Size = sizeof(BITMAPV5HEADER);
-    bi.bV5Width = g_overlay.width;
-    bi.bV5Height = -g_overlay.height; // top-down DIB
+    bi.bV5Width = cached->width;
+    bi.bV5Height = -cached->height; // top-down DIB
     bi.bV5Planes = 1;
     bi.bV5BitCount = 32;
     bi.bV5Compression = BI_BITFIELDS;
@@ -133,36 +184,85 @@ static int init_bitmap(void) {
         ReleaseDC(NULL, hdc);
         return 0;
     }
-    memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+    memcpy(g_bits, cached->data, (size_t)cached->width * cached->height * 4);
     ReleaseDC(NULL, hdc);
     return 1;
 }
 
-static void update_window(void) {
-    HDC screen = GetDC(NULL);
-    HDC mem = CreateCompatibleDC(screen);
-    SelectObject(mem, g_bitmap);
+static int init_graphics_resources(void) {
+    g_screen_dc = GetDC(NULL);
+    if (!g_screen_dc) return 0;
+    
+    g_mem_dc = CreateCompatibleDC(g_screen_dc);
+    if (!g_mem_dc) {
+        ReleaseDC(NULL, g_screen_dc);
+        g_screen_dc = NULL;
+        return 0;
+    }
+    
+    return 1;
+}
 
-    SIZE size = {g_overlay.width, g_overlay.height};
+static void cleanup_graphics_resources(void) {
+    if (g_mem_dc) {
+        DeleteDC(g_mem_dc);
+        g_mem_dc = NULL;
+    }
+    if (g_screen_dc) {
+        ReleaseDC(NULL, g_screen_dc);
+        g_screen_dc = NULL;
+    }
+}
+
+static void update_bitmap_from_cache(void) {
+    const Overlay *cached = get_cached_variation(&g_cache, g_cfg.opacity, g_cfg.invert);
+    if (cached && g_bits) {
+        memcpy(g_bits, cached->data, (size_t)cached->width * cached->height * 4);
+    }
+}
+
+static void position_window_on_monitor(void) {
+    MonitorInfo info;
+    if (get_target_monitor_info(&info) == 0) {
+        // Position at bottom center of the target monitor
+        int x = info.x + (info.width - g_cache.base_width) / 2;
+        int y = info.y + info.height - g_cache.base_height - 50; // 50px from bottom
+        SetWindowPos(g_hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
+static void update_window(void) {
+    if (!g_screen_dc || !g_mem_dc || !g_bitmap) return;
+    
+    SelectObject(g_mem_dc, g_bitmap);
+
+    // Use cache dimensions (all variations should have same dimensions)
+    SIZE size = {g_cache.base_width, g_cache.base_height};
     POINT src = {0, 0};
     POINT dst = {0, 0};
     BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    if (!UpdateLayeredWindow(g_hwnd, screen, &dst, &size, mem, &src, 0, &bf, ULW_ALPHA)) {
+    if (!UpdateLayeredWindow(g_hwnd, g_screen_dc, &dst, &size, g_mem_dc, &src, 0, &bf, ULW_ALPHA)) {
         DWORD err = GetLastError();
         char buf[128];
         snprintf(buf, sizeof(buf), "UpdateLayeredWindow failed: %lu\n", (unsigned long)err);
         OutputDebugStringA(buf);
     }
-
-    DeleteDC(mem);
-    ReleaseDC(NULL, screen);
 }
 
 static void show_tray_menu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
     AppendMenuA(menu, MF_STRING | (g_cfg.autostart ? MF_CHECKED : 0), 1, "Start at login");
+    AppendMenuA(menu, MF_STRING | (g_cfg.persistent ? MF_CHECKED : 0), 5, "Persistent mode");
     AppendMenuA(menu, MF_STRING | (g_cfg.invert ? MF_CHECKED : 0), 3, "Invert colors");
     AppendMenuA(menu, MF_STRING, 4, "Cycle opacity");
+    // Show current monitor status
+    char monitor_text[64];
+    if (g_cfg.monitor == 0) {
+        strcpy(monitor_text, "Cycle monitor (Auto)");
+    } else {
+        snprintf(monitor_text, sizeof(monitor_text), "Cycle monitor (%d)", g_cfg.monitor);
+    }
+    AppendMenuA(menu, MF_STRING, 6, monitor_text);
     AppendMenuA(menu, MF_STRING, 2, "Quit");
     POINT p; GetCursorPos(&p);
     SetForegroundWindow(hwnd);
@@ -173,11 +273,17 @@ static void show_tray_menu(HWND hwnd) {
 static void on_hotkey(HWND hwnd) {
     if (g_cfg.persistent) {
         g_visible = !g_visible;
-        ShowWindow(hwnd, g_visible ? SW_SHOW : SW_HIDE);
-        if (g_visible) update_window();
+        if (g_visible) {
+            position_window_on_monitor();
+            ShowWindow(hwnd, SW_SHOW);
+            update_window();
+        } else {
+            ShowWindow(hwnd, SW_HIDE);
+        }
     } else {
         g_hotkey_active = 1;
         g_visible = 1;
+        position_window_on_monitor();
         ShowWindow(hwnd, SW_SHOW);
         update_window();
     }
@@ -195,8 +301,7 @@ static void on_command(HWND hwnd, WPARAM wParam) {
         break;
     case 3:
         g_cfg.invert = !g_cfg.invert;
-        apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
-        memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+        update_bitmap_from_cache();
         update_window();
         save_config(g_cfg_path, &g_cfg);
         break;
@@ -211,11 +316,35 @@ static void on_command(HWND hwnd, WPARAM wParam) {
             }
         }
         g_cfg.opacity = levels[next];
-        apply_opacity_inversion(&g_overlay, g_cfg.opacity, g_cfg.invert);
-        memcpy(g_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+        update_bitmap_from_cache();
         update_window();
         save_config(g_cfg_path, &g_cfg);
         break;
+    }
+    case 5:
+        g_cfg.persistent = !g_cfg.persistent;
+        // Dynamically manage keyboard hook based on persistent mode
+        if (g_cfg.persistent && g_hook) {
+            UnhookWindowsHookEx(g_hook);
+            g_hook = NULL;
+        } else if (!g_cfg.persistent && !g_hook) {
+            g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+        }
+        // Hide overlay if switching to persistent mode while visible
+        if (g_cfg.persistent && g_visible) {
+            ShowWindow(hwnd, SW_HIDE);
+            g_visible = 0;
+            g_hotkey_active = 0;
+        }
+        save_config(g_cfg_path, &g_cfg);
+        break;
+    case 6: {
+        // Cycle through monitors: 0=auto, 1=primary, 2=secondary, etc.
+        int monitor_count = get_monitor_count();
+        g_cfg.monitor = (g_cfg.monitor + 1) % (monitor_count + 1); // +1 for auto mode
+        save_config(g_cfg_path, &g_cfg);
+        break;
+    }
     }
     }
 }
@@ -224,6 +353,8 @@ static void on_destroy(void) {
     Shell_NotifyIconA(NIM_DELETE, &g_nid);
     UnregisterHotKey(NULL, 1);
     if (g_hook) UnhookWindowsHookEx(g_hook);
+    cleanup_graphics_resources();
+    free_overlay_cache(&g_cache);
     PostQuitMessage(0);
 }
 
@@ -269,6 +400,10 @@ static void init_config(void) {
 
 static int init_overlay_window(HINSTANCE hInst) {
     if (!init_bitmap()) {
+        return 0;
+    }
+
+    if (!init_graphics_resources()) {
         return 0;
     }
 

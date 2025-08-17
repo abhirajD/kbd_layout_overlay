@@ -4,8 +4,10 @@
 #import "../shared/config.h"
 #import "../shared/overlay.h"
 #import "../shared/hotkey.h"
+#import "../shared/monitor.h"
 #include <string.h>
 #include <strings.h>
+#include "../keymap_data.h"
 
 @interface AppDelegate () {
     EventHotKeyRef _hotKeyRef;
@@ -16,6 +18,10 @@
     Config _cfg;
     NSString *_configPath;
     Overlay _overlay;
+    OverlayCache _cache;
+    
+    // Cached CGImages for each overlay variation
+    NSMutableDictionary<NSString*, NSValue*> *_cgImageCache;
 }
 - (BOOL)isPersistent;
 @end
@@ -58,6 +64,8 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     if (_eventHandler) {
         RemoveEventHandler(_eventHandler);
     }
+    [self cleanupCGImageCache];
+    free_overlay_cache(&_cache);
     free_overlay(&_overlay);
 }
 
@@ -89,15 +97,33 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
             if (resPath) {
                 const char *res = [resPath fileSystemRepresentation];
                 r = load_overlay_image(res, max_w, max_h, &_overlay);
-                if (r != OVERLAY_OK) return;
-            } else {
+            }
+        }
+        // If still failed, try embedded fallback
+        if (r != OVERLAY_OK) {
+            r = load_overlay_image_mem(keymap_png, keymap_png_len, max_w, max_h, &_overlay);
+            if (r != OVERLAY_OK) {
+                NSAlert *alert = [[NSAlert alloc] init];
+                [alert setMessageText:@"Failed to load embedded overlay image"];
+                [alert runModal];
                 return;
             }
-        } else {
+        }
+    }
+    
+    // Initialize cache asynchronously for faster startup
+    if (init_overlay_cache_async(&_cache, &_overlay) != OVERLAY_OK) {
+        // Fallback to synchronous cache if async fails
+        if (init_overlay_cache(&_cache, &_overlay) != OVERLAY_OK) {
+            NSAlert *alert = [[NSAlert alloc] init];
+            [alert setMessageText:@"Failed to initialize image cache"];
+            [alert runModal];
             return;
         }
     }
-    apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
+    
+    // Initialize CGImage cache for even faster performance
+    [self initCGImageCache];
 
     CGFloat width = (CGFloat)_overlay.width / scaleFactor;
     CGFloat height = (CGFloat)_overlay.height / scaleFactor;
@@ -113,7 +139,7 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     [_panel setIgnoresMouseEvents:YES];
 
     _overlayView = [[OverlayView alloc] initWithFrame:rect];
-    [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
+    [self updateOverlayFromCache];
     [_panel setContentView:_overlayView];
 }
 
@@ -123,6 +149,10 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     [startItem setTarget:self];
     [startItem setState:_cfg.autostart ? NSControlStateValueOn : NSControlStateValueOff];
     [menu addItem:startItem];
+    NSMenuItem *persistentItem = [[NSMenuItem alloc] initWithTitle:@"Persistent mode" action:@selector(togglePersistent:) keyEquivalent:@""];
+    [persistentItem setTarget:self];
+    [persistentItem setState:_cfg.persistent ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:persistentItem];
     NSMenuItem *invertItem = [[NSMenuItem alloc] initWithTitle:@"Invert colors" action:@selector(toggleInvert:) keyEquivalent:@""];
     [invertItem setTarget:self];
     [invertItem setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
@@ -130,6 +160,16 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     NSMenuItem *opacityItem = [[NSMenuItem alloc] initWithTitle:@"Cycle opacity" action:@selector(cycleOpacity:) keyEquivalent:@""];
     [opacityItem setTarget:self];
     [menu addItem:opacityItem];
+    // Show current monitor status
+    NSString *monitorTitle;
+    if (_cfg.monitor == 0) {
+        monitorTitle = @"Cycle monitor (Auto)";
+    } else {
+        monitorTitle = [NSString stringWithFormat:@"Cycle monitor (%d)", _cfg.monitor];
+    }
+    NSMenuItem *monitorItem = [[NSMenuItem alloc] initWithTitle:monitorTitle action:@selector(cycleMonitor:) keyEquivalent:@""];
+    [monitorItem setTarget:self];
+    [menu addItem:monitorItem];
     [menu addItem:[NSMenuItem separatorItem]];
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" action:@selector(quit:) keyEquivalent:@""];
     [quitItem setTarget:self];
@@ -138,41 +178,38 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
 }
 
 - (NSScreen *)targetScreen {
-    NSScreen *screen = nil;
-    NSRunningApplication *activeApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
-    if (activeApp) {
-        CFArrayRef windowList = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly |
-                                                          kCGWindowListExcludeDesktopElements,
-                                                          kCGNullWindowID);
-        NSArray *windows = CFBridgingRelease(windowList);
-        for (NSDictionary *window in windows) {
-            if ([window[(id)kCGWindowOwnerPID] intValue] != activeApp.processIdentifier) {
-                continue;
-            }
-            if ([window[(id)kCGWindowLayer] intValue] != 0) {
-                continue;
-            }
-            CGRect bounds;
-            CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)window[(id)kCGWindowBounds], &bounds);
-            for (NSScreen *s in [NSScreen screens]) {
-                if (CGRectIntersectsRect(bounds, NSRectToCGRect([s frame]))) {
-                    screen = s;
-                    break;
-                }
-            }
-            if (screen) break;
+    MonitorInfo info;
+    int result = -1;
+    
+    if (_cfg.monitor == 0) {
+        // Auto: use active monitor
+        result = get_active_monitor(&info);
+    } else if (_cfg.monitor == 1) {
+        // Primary monitor
+        result = get_primary_monitor(&info);
+    } else {
+        // Specific monitor (2, 3, etc.)
+        result = get_monitor_info(_cfg.monitor, &info);
+    }
+    
+    if (result != 0) {
+        // Fallback to primary monitor
+        if (get_primary_monitor(&info) != 0) {
+            return [NSScreen mainScreen];
         }
     }
-    if (!screen) {
-        NSPoint mouse = [NSEvent mouseLocation];
-        for (NSScreen *s in [NSScreen screens]) {
-            if (NSPointInRect(mouse, [s frame])) {
-                screen = s;
-                break;
-            }
+    
+    // Convert MonitorInfo to NSScreen
+    NSArray *screens = [NSScreen screens];
+    for (NSScreen *screen in screens) {
+        NSRect frame = [screen frame];
+        if ((int)frame.origin.x == info.x && (int)frame.origin.y == info.y &&
+            (int)frame.size.width == info.width && (int)frame.size.height == info.height) {
+            return screen;
         }
     }
-    return screen ?: [NSScreen mainScreen];
+    
+    return [NSScreen mainScreen];
 }
 
 - (void)showPanel {
@@ -213,6 +250,16 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     save_config([_configPath fileSystemRepresentation], &_cfg);
 }
 
+- (void)togglePersistent:(id)sender {
+    _cfg.persistent = !_cfg.persistent;
+    [sender setState:_cfg.persistent ? NSControlStateValueOn : NSControlStateValueOff];
+    // Hide overlay if switching to persistent mode while visible
+    if (_cfg.persistent && [_panel isVisible]) {
+        [self hidePanel];
+    }
+    save_config([_configPath fileSystemRepresentation], &_cfg);
+}
+
 - (void)quit:(id)sender {
     [NSApp terminate:nil];
 }
@@ -220,8 +267,7 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
 - (void)toggleInvert:(id)sender {
     _cfg.invert = !_cfg.invert;
     [sender setState:_cfg.invert ? NSControlStateValueOn : NSControlStateValueOff];
-    apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
-    [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
+    [self updateOverlayFromCache];
     save_config([_configPath fileSystemRepresentation], &_cfg);
 }
 
@@ -236,13 +282,102 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
         }
     }
     _cfg.opacity = levels[next];
-    apply_opacity_inversion(&_overlay, _cfg.opacity, _cfg.invert);
-    [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
+    [self updateOverlayFromCache];
+    save_config([_configPath fileSystemRepresentation], &_cfg);
+}
+
+- (void)cycleMonitor:(id)sender {
+    // Cycle through monitors: 0=auto, 1=primary, 2=secondary, etc.
+    int monitor_count = get_monitor_count();
+    _cfg.monitor = (_cfg.monitor + 1) % (monitor_count + 1); // +1 for auto mode
     save_config([_configPath fileSystemRepresentation], &_cfg);
 }
 
 - (BOOL)isPersistent {
     return _cfg.persistent;
+}
+
+- (NSString *)cacheKeyForOpacity:(float)opacity invert:(int)invert {
+    return [NSString stringWithFormat:@"%.3f_%d", opacity, invert];
+}
+
+- (void)initCGImageCache {
+    _cgImageCache = [[NSMutableDictionary alloc] init];
+    
+    // If async cache generation is complete, pre-generate CGImages
+    if (_cache.async_generation_complete) {
+        [self generateCGImagesFromCache];
+    }
+    // If not complete, CGImages will be generated on-demand in updateOverlayFromCache
+}
+
+- (void)generateCGImagesFromCache {
+    // Pre-generate CGImages for all cached variations
+    for (int i = 0; i < _cache.count; i++) {
+        const Overlay *variation = &_cache.variations[i];
+        float opacity = _cache.opacity_levels[i];
+        int invert = _cache.invert_flags[i];
+        
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, variation->data,
+            (size_t)variation->width * variation->height * 4, NULL);
+        CGImageRef cgImage = CGImageCreate(variation->width, variation->height, 8, 32, 
+            variation->width * 4, colorSpace,
+            kCGBitmapByteOrderDefault | kCGImageAlphaPremultipliedLast,
+            provider, NULL, false, kCGRenderingIntentDefault);
+        
+        if (cgImage) {
+            NSString *key = [self cacheKeyForOpacity:opacity invert:invert];
+            _cgImageCache[key] = [NSValue valueWithPointer:cgImage];
+        }
+        
+        CGColorSpaceRelease(colorSpace);
+        CGDataProviderRelease(provider);
+    }
+}
+
+- (void)cleanupCGImageCache {
+    for (NSValue *value in [_cgImageCache allValues]) {
+        CGImageRef cgImage = (CGImageRef)[value pointerValue];
+        if (cgImage) {
+            CGImageRelease(cgImage);
+        }
+    }
+    [_cgImageCache removeAllObjects];
+}
+
+- (void)updateOverlayFromCache {
+    NSString *key = [self cacheKeyForOpacity:_cfg.opacity invert:_cfg.invert];
+    NSValue *value = _cgImageCache[key];
+    
+    if (value) {
+        // Use pre-generated CGImage - super fast!
+        CGImageRef cgImage = (CGImageRef)[value pointerValue];
+        [_overlayView setPrecomputedImage:cgImage];
+    } else {
+        // Check if async cache generation completed since last time
+        if (_cache.async_generation_complete && [_cgImageCache count] == 0) {
+            // Cache is ready but CGImages not generated yet - do it now
+            [self generateCGImagesFromCache];
+            
+            // Try again with the newly generated CGImage
+            value = _cgImageCache[key];
+            if (value) {
+                CGImageRef cgImage = (CGImageRef)[value pointerValue];
+                [_overlayView setPrecomputedImage:cgImage];
+                return;
+            }
+        }
+        
+        // Fallback to cached overlay or original image
+        const Overlay *cached = get_cached_variation(&_cache, _cfg.opacity, _cfg.invert);
+        if (cached) {
+            [_overlayView setImageData:cached->data width:cached->width height:cached->height];
+        } else {
+            // Cache not ready yet - use original image temporarily
+            [_overlayView setImageData:_overlay.data width:_overlay.width height:_overlay.height];
+        }
+    }
 }
 
 - (void)setAutostart:(BOOL)enable {
@@ -273,6 +408,7 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
         _cfg.autostart = 0;
         strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
         _cfg.persistent = 0;
+        _cfg.monitor = 0;
         save_config([_configPath fileSystemRepresentation], &_cfg);
     }
     if (!_cfg.hotkey[0]) {

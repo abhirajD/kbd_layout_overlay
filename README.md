@@ -26,6 +26,7 @@ Settings are stored in a simple `key=value` file.
 | `autostart`   | `1` launches the app at login, `0` disables autostart. |
 | `hotkey`      | `+` separated list of modifiers and key, e.g. `Ctrl+Alt+K` or `Command+Option+K`. |
 | `persistent`  | `1` toggles the overlay, `0` shows it only while keys are held. |
+| `monitor`     | `0` auto-detects active monitor, `1` primary monitor, `2` secondary, etc. |
 | `log`         | Logging level: `error`, `warn`, `info`, `debug`, or `trace`. |
 
 Edit the file with any text editor:

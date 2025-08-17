@@ -14,6 +14,16 @@ typedef struct {
     int channels; /* should be 4 for RGBA */
 } Overlay;
 
+#define MAX_CACHED_VARIATIONS 16
+typedef struct {
+    Overlay variations[MAX_CACHED_VARIATIONS];
+    float opacity_levels[MAX_CACHED_VARIATIONS];
+    int invert_flags[MAX_CACHED_VARIATIONS];
+    int count;
+    int base_width, base_height;
+    int async_generation_complete;  // 0 = still generating, 1 = done
+} OverlayCache;
+
 enum {
     OVERLAY_OK = 0,
     OVERLAY_ERR_MEMORY = -1,
@@ -29,6 +39,15 @@ int load_overlay_image_mem(const unsigned char *buffer, int len,
 void apply_opacity_inversion(Overlay *img, float opacity, int invert);
 const unsigned char *get_overlay_buffer(const Overlay *img, int *width, int *height);
 void free_overlay(Overlay *img);
+
+/* Cache management functions */
+int init_overlay_cache(OverlayCache *cache, const Overlay *base_image);
+int init_overlay_cache_async(OverlayCache *cache, const Overlay *base_image); // Non-blocking version
+const Overlay *get_cached_variation(OverlayCache *cache, float opacity, int invert);
+void free_overlay_cache(OverlayCache *cache);
+
+/* Performance testing */
+void benchmark_image_processing(Overlay *img, float opacity, int invert);
 
 #ifdef __cplusplus
 }

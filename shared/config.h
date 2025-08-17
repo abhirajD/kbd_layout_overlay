@@ -12,6 +12,7 @@ typedef struct {
     int autostart; /* 0 or 1 */
     char hotkey[256];
     int persistent; /* 0 or 1 */
+    int monitor; /* 0=auto, 1=primary, 2=secondary, etc. */
 } Config;
 
 /* Load key=value config file */
