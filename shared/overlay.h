@@ -1,6 +1,7 @@
 #ifndef OVERLAY_H
 #define OVERLAY_H
 
+#include <stdint.h>
 #include <stddef.h>
 
 #ifdef __cplusplus

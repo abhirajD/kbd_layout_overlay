@@ -133,6 +133,7 @@ klo_error_t klo_context_reload_overlay(klo_app_context_t *ctx) {
     return KLO_OK;
 }
 
+#ifndef _WIN32
 /* Graphics context implementation - platform-agnostic base */
 klo_error_t klo_graphics_init(klo_graphics_context_t *gfx) {
     KLO_CHECK_PARAM(gfx);
@@ -160,6 +161,7 @@ klo_error_t klo_graphics_update_bitmap(klo_graphics_context_t *gfx, const Overla
     
     return KLO_OK;
 }
+#endif
 
 /* Hotkey context implementation - platform-agnostic base */
 klo_error_t klo_hotkey_init(klo_hotkey_context_t *hk, const char *hotkey_string) {
