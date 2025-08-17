@@ -44,6 +44,6 @@ if(APPLE)
         macos/KbdLayoutOverlay/OverlayView.m
     )
     target_include_directories(KbdLayoutOverlay PRIVATE ${CMAKE_SOURCE_DIR}/macos/KbdLayoutOverlay ${CMAKE_SOURCE_DIR}/shared)
-    target_link_libraries(KbdLayoutOverlay PRIVATE klo_core "-framework Cocoa" "-framework ApplicationServices")
+    target_link_libraries(KbdLayoutOverlay PRIVATE klo_core "-framework Cocoa" "-framework ApplicationServices" "-framework Carbon")
     set_target_properties(KbdLayoutOverlay PROPERTIES MACOSX_BUNDLE_BUNDLE_NAME "Kbd Layout Overlay")
 endif()
