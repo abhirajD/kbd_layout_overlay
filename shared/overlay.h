@@ -22,6 +22,12 @@ typedef struct {
     int count;
     int base_width, base_height;
     int async_generation_complete;  // 0 = still generating, 1 = done
+
+    /* Platform-opaque lock pointer for protecting async cache access.
+       Implemented in overlay.c using CRITICAL_SECTION (Windows) or
+       pthread_mutex_t (POSIX). */
+    void *lock;
+    int lock_inited;
 } OverlayCache;
 
 enum {

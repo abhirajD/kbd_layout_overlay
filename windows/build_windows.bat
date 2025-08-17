@@ -11,5 +11,5 @@ if not defined VS_PATH (
 call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
 
 rc /fo resource.res resource.rc
-cl /O2 /arch:SSE2 main.c ..\shared\overlay.c ..\shared\config.c ..\shared\hotkey.c ..\shared\monitor.c resource.res user32.lib gdi32.lib advapi32.lib shell32.lib /Fe:kbd_layout_overlay.exe /link /SUBSYSTEM:WINDOWS
+cl /O2 /arch:SSE2 main.c ..\shared\overlay.c ..\shared\config.c ..\shared\hotkey.c ..\shared\monitor.c ..\shared\error.c ..\shared\app_context.c resource.res user32.lib gdi32.lib advapi32.lib shell32.lib /Fe:kbd_layout_overlay.exe /link /SUBSYSTEM:WINDOWS
 endlocal

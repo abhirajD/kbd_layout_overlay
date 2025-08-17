@@ -34,11 +34,67 @@
 #define SIMD_AVAILABLE 0
 #endif
 
-// Structure for async cache generation
+ // Structure for async cache generation
 typedef struct {
     OverlayCache *cache;
     Overlay base_image;  // Copy of the base image for thread safety
 } AsyncCacheData;
+
+/* OverlayCache lock helpers (platform-specific). We allocate a platform-specific
+   lock object and store it in cache->lock. lock_inited indicates successful init.
+*/
+static int overlay_cache_lock_init(OverlayCache *cache) {
+    if (!cache) return 0;
+#ifdef _WIN32
+    CRITICAL_SECTION *cs = (CRITICAL_SECTION*)malloc(sizeof(CRITICAL_SECTION));
+    if (!cs) return 0;
+    InitializeCriticalSection(cs);
+    cache->lock = cs;
+    cache->lock_inited = 1;
+    return 1;
+#else
+    pthread_mutex_t *mtx = (pthread_mutex_t*)malloc(sizeof(pthread_mutex_t));
+    if (!mtx) return 0;
+    if (pthread_mutex_init(mtx, NULL) != 0) {
+        free(mtx);
+        return 0;
+    }
+    cache->lock = mtx;
+    cache->lock_inited = 1;
+    return 1;
+#endif
+}
+
+static void overlay_cache_lock(OverlayCache *cache) {
+    if (!cache || !cache->lock_inited) return;
+#ifdef _WIN32
+    EnterCriticalSection((CRITICAL_SECTION*)cache->lock);
+#else
+    pthread_mutex_lock((pthread_mutex_t*)cache->lock);
+#endif
+}
+
+static void overlay_cache_unlock(OverlayCache *cache) {
+    if (!cache || !cache->lock_inited) return;
+#ifdef _WIN32
+    LeaveCriticalSection((CRITICAL_SECTION*)cache->lock);
+#else
+    pthread_mutex_unlock((pthread_mutex_t*)cache->lock);
+#endif
+}
+
+static void overlay_cache_lock_destroy(OverlayCache *cache) {
+    if (!cache || !cache->lock_inited) return;
+#ifdef _WIN32
+    DeleteCriticalSection((CRITICAL_SECTION*)cache->lock);
+    free(cache->lock);
+#else
+    pthread_mutex_destroy((pthread_mutex_t*)cache->lock);
+    free(cache->lock);
+#endif
+    cache->lock = NULL;
+    cache->lock_inited = 0;
+}
 
 static int finalize_image(unsigned char *data, int width, int height,
                           int max_width, int max_height, Overlay *out) {
@@ -274,25 +330,19 @@ void free_overlay(Overlay *img) {
     }
 }
 
-static Overlay *duplicate_overlay(const Overlay *src) {
-    if (!src || !src->data) return NULL;
-    
-    Overlay *dst = malloc(sizeof(Overlay));
-    if (!dst) return NULL;
+static int duplicate_overlay_into(Overlay *dst, const Overlay *src) {
+    if (!dst || !src || !src->data) return 0;
     
     size_t data_size = (size_t)src->width * src->height * 4;
     dst->data = malloc(data_size);
-    if (!dst->data) {
-        free(dst);
-        return NULL;
-    }
+    if (!dst->data) return 0;
     
     memcpy(dst->data, src->data, data_size);
     dst->width = src->width;
     dst->height = src->height;
     dst->channels = src->channels;
     
-    return dst;
+    return 1;
 }
 
 // Background thread function for cache generation
@@ -304,29 +354,45 @@ static void *async_cache_thread(void *param) {
     AsyncCacheData *data = (AsyncCacheData *)param;
     OverlayCache *cache = data->cache;
     
+    // Prepare a local cache to build variations off-thread, then publish atomically
+    OverlayCache local_cache;
+    memset(&local_cache, 0, sizeof(OverlayCache));
+    local_cache.base_width = data->base_image.width;
+    local_cache.base_height = data->base_image.height;
+    
     // Precompute common variations: 4 opacity levels × 2 invert states = 8 variations
     float opacity_levels[] = {0.25f, 0.5f, 0.75f, 1.0f};
     int invert_states[] = {0, 1};
     
-    for (int o = 0; o < 4 && cache->count < MAX_CACHED_VARIATIONS; o++) {
-        for (int i = 0; i < 2 && cache->count < MAX_CACHED_VARIATIONS; i++) {
-            Overlay *variation = duplicate_overlay(&data->base_image);
-            if (!variation) continue;
+    for (int o = 0; o < 4 && local_cache.count < MAX_CACHED_VARIATIONS; o++) {
+        for (int i = 0; i < 2 && local_cache.count < MAX_CACHED_VARIATIONS; i++) {
+            if (!duplicate_overlay_into(&local_cache.variations[local_cache.count], &data->base_image)) {
+                continue;
+            }
             
-            apply_opacity_inversion(variation, opacity_levels[o], invert_states[i]);
+            apply_opacity_inversion(&local_cache.variations[local_cache.count], opacity_levels[o], invert_states[i]);
             
-            cache->variations[cache->count] = *variation;
-            cache->opacity_levels[cache->count] = opacity_levels[o];
-            cache->invert_flags[cache->count] = invert_states[i];
-            cache->count++;
-            
-            free(variation); // Free the struct wrapper, but keep the data
+            local_cache.opacity_levels[local_cache.count] = opacity_levels[o];
+            local_cache.invert_flags[local_cache.count] = invert_states[i];
+            local_cache.count++;
         }
     }
     
-    // Mark as complete
+    // Publish local cache into shared cache in one atomic-like step.
+    // Acquire lock to prevent concurrent readers from seeing a partially-updated cache.
+    if (cache->lock_inited) overlay_cache_lock(cache);
+
+    memcpy(cache->variations, local_cache.variations, sizeof(Overlay) * local_cache.count);
+    memcpy(cache->opacity_levels, local_cache.opacity_levels, sizeof(float) * local_cache.count);
+    memcpy(cache->invert_flags, local_cache.invert_flags, sizeof(int) * local_cache.count);
+    cache->base_width = local_cache.base_width;
+    cache->base_height = local_cache.base_height;
+    cache->count = local_cache.count;
     cache->async_generation_complete = 1;
+
+    if (cache->lock_inited) overlay_cache_unlock(cache);
     
+    // Do not free the variation data - ownership now belongs to shared cache.
     // Clean up base image copy
     free_overlay(&data->base_image);
     free(data);
@@ -345,6 +411,12 @@ int init_overlay_cache(OverlayCache *cache, const Overlay *base_image) {
     cache->base_width = base_image->width;
     cache->base_height = base_image->height;
     cache->async_generation_complete = 0;
+
+    /* Initialize lock for protecting readers/writers. If lock init fails,
+       treat as an out-of-memory condition. */
+    if (!overlay_cache_lock_init(cache)) {
+        return OVERLAY_ERR_MEMORY;
+    }
     
     // Synchronous version - generate all variations immediately
     float opacity_levels[] = {0.25f, 0.5f, 0.75f, 1.0f};
@@ -352,17 +424,15 @@ int init_overlay_cache(OverlayCache *cache, const Overlay *base_image) {
     
     for (int o = 0; o < 4 && cache->count < MAX_CACHED_VARIATIONS; o++) {
         for (int i = 0; i < 2 && cache->count < MAX_CACHED_VARIATIONS; i++) {
-            Overlay *variation = duplicate_overlay(base_image);
-            if (!variation) continue;
+            if (!duplicate_overlay_into(&cache->variations[cache->count], base_image)) {
+                continue;
+            }
             
-            apply_opacity_inversion(variation, opacity_levels[o], invert_states[i]);
+            apply_opacity_inversion(&cache->variations[cache->count], opacity_levels[o], invert_states[i]);
             
-            cache->variations[cache->count] = *variation;
             cache->opacity_levels[cache->count] = opacity_levels[o];
             cache->invert_flags[cache->count] = invert_states[i];
             cache->count++;
-            
-            free(variation); // Free the struct wrapper, but keep the data
         }
     }
     
@@ -377,6 +447,12 @@ int init_overlay_cache_async(OverlayCache *cache, const Overlay *base_image) {
     cache->base_width = base_image->width;
     cache->base_height = base_image->height;
     cache->async_generation_complete = 0;
+
+    /* Initialize lock for protecting readers/writers. If lock init fails,
+       fallback to synchronous init to avoid leaving callers without a usable cache. */
+    if (!overlay_cache_lock_init(cache)) {
+        return init_overlay_cache(cache, base_image);
+    }
     
     // Create data for background thread
     AsyncCacheData *async_data = malloc(sizeof(AsyncCacheData));
@@ -385,8 +461,7 @@ int init_overlay_cache_async(OverlayCache *cache, const Overlay *base_image) {
     async_data->cache = cache;
     
     // Create a deep copy of the base image for thread safety
-    async_data->base_image = *duplicate_overlay(base_image);
-    if (!async_data->base_image.data) {
+    if (!duplicate_overlay_into(&async_data->base_image, base_image)) {
         free(async_data);
         return OVERLAY_ERR_MEMORY;
     }
@@ -414,38 +489,52 @@ int init_overlay_cache_async(OverlayCache *cache, const Overlay *base_image) {
 
 const Overlay *get_cached_variation(OverlayCache *cache, float opacity, int invert) {
     if (!cache) return NULL;
+
+    if (cache->lock_inited) overlay_cache_lock(cache);
     
     // If async generation isn't complete and we have no variations yet,
     // we'll return NULL and let the caller fall back to real-time processing
-    if (cache->count == 0) return NULL;
+    if (cache->count == 0) {
+        if (cache->lock_inited) overlay_cache_unlock(cache);
+        return NULL;
+    }
     
     // Look for exact match first
+    const Overlay *result = NULL;
     for (int i = 0; i < cache->count; i++) {
         if (fabs(cache->opacity_levels[i] - opacity) < 0.001f && 
             cache->invert_flags[i] == invert) {
-            return &cache->variations[i];
+            result = &cache->variations[i];
+            break;
         }
     }
     
     // No exact match found - return closest match with correct invert flag
-    float closest_diff = 2.0f;
-    int closest_idx = -1;
-    
-    for (int i = 0; i < cache->count; i++) {
-        if (cache->invert_flags[i] == invert) {
-            float diff = fabs(cache->opacity_levels[i] - opacity);
-            if (diff < closest_diff) {
-                closest_diff = diff;
-                closest_idx = i;
+    if (!result) {
+        float closest_diff = 2.0f;
+        int closest_idx = -1;
+        
+        for (int i = 0; i < cache->count; i++) {
+            if (cache->invert_flags[i] == invert) {
+                float diff = fabs(cache->opacity_levels[i] - opacity);
+                if (diff < closest_diff) {
+                    closest_diff = diff;
+                    closest_idx = i;
+                }
             }
         }
+        
+        if (closest_idx >= 0) result = &cache->variations[closest_idx];
     }
-    
-    return closest_idx >= 0 ? &cache->variations[closest_idx] : NULL;
+
+    if (cache->lock_inited) overlay_cache_unlock(cache);
+    return result;
 }
 
 void free_overlay_cache(OverlayCache *cache) {
     if (!cache) return;
+
+    if (cache->lock_inited) overlay_cache_lock(cache);
     
     for (int i = 0; i < cache->count; i++) {
         if (cache->variations[i].data) {
@@ -455,4 +544,9 @@ void free_overlay_cache(OverlayCache *cache) {
     }
     
     cache->count = 0;
+
+    if (cache->lock_inited) {
+        overlay_cache_unlock(cache);
+        overlay_cache_lock_destroy(cache);
+    }
 }

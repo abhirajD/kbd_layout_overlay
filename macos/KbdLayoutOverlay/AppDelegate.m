@@ -5,6 +5,7 @@
 #import "../shared/overlay.h"
 #import "../shared/hotkey.h"
 #import "../shared/monitor.h"
+#import "../shared/error.h"
 #include <string.h>
 #include <strings.h>
 #include "../keymap_data.h"
@@ -67,6 +68,7 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     [self cleanupCGImageCache];
     free_overlay_cache(&_cache);
     free_overlay(&_overlay);
+    free_config(&_cfg);
 }
 
 - (void)createOverlay {
@@ -311,6 +313,12 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     // If not complete, CGImages will be generated on-demand in updateOverlayFromCache
 }
 
+static void provider_release(void *info, const void *data, size_t size) {
+    (void)data;
+    (void)size;
+    if (info) free(info);
+}
+
 - (void)generateCGImagesFromCache {
     // Pre-generate CGImages for all cached variations
     for (int i = 0; i < _cache.count; i++) {
@@ -318,10 +326,21 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
         float opacity = _cache.opacity_levels[i];
         int invert = _cache.invert_flags[i];
         
+        size_t data_size = (size_t)variation->width * variation->height * 4;
+        void *owned_buf = malloc(data_size);
+        if (!owned_buf) continue;
+        memcpy(owned_buf, variation->data, data_size);
+        
         CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-        CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, variation->data,
-            (size_t)variation->width * variation->height * 4, NULL);
-        CGImageRef cgImage = CGImageCreate(variation->width, variation->height, 8, 32, 
+        CGDataProviderRef provider = CGDataProviderCreateWithData(owned_buf, owned_buf,
+            data_size, provider_release);
+        if (!provider) {
+            CGColorSpaceRelease(colorSpace);
+            free(owned_buf);
+            continue;
+        }
+        
+        CGImageRef cgImage = CGImageCreate(variation->width, variation->height, 8, 32,
             variation->width * 4, colorSpace,
             kCGBitmapByteOrderDefault | kCGImageAlphaPremultipliedLast,
             provider, NULL, false, kCGRenderingIntentDefault);
@@ -398,21 +417,57 @@ static void parseHotkeyCarbon(const char *hotkey, UInt32 *keyCode, UInt32 *mods)
     }
 }
 
+/* macOS-specific error handler */
+static void macos_error_handler(const klo_error_context_t *ctx) {
+    NSString *message = [NSString stringWithFormat:@"%s\n\nFile: %s:%d\nFunction: %s",
+                        ctx->message, ctx->file, ctx->line, ctx->function];
+    
+    NSAlert *alert = [[NSAlert alloc] init];
+    [alert setMessageText:@"Keyboard Layout Overlay Error"];
+    [alert setInformativeText:message];
+    [alert setAlertStyle:NSAlertStyleCritical];
+    [alert runModal];
+}
+
 // Load configuration from disk or create defaults if missing
 - (void)loadConfiguration {
     _configPath = [@"~/Library/Preferences/kbd_layout_overlay.cfg" stringByExpandingTildeInPath];
-    if (load_config([_configPath fileSystemRepresentation], &_cfg) != 0) {
-        strcpy(_cfg.overlay_path, "keymap.png");
-        _cfg.opacity = 1.0f;
-        _cfg.invert = 0;
-        _cfg.autostart = 0;
-        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
-        _cfg.persistent = 0;
-        _cfg.monitor = 0;
+    
+    /* Initialize error handling first */
+    klo_error_init(macos_error_handler);
+    
+    /* Initialize with defaults first */
+    klo_error_t err = init_config(&_cfg);
+    if (err != KLO_OK) {
+        klo_log(KLO_LOG_FATAL, "Failed to initialize configuration: %s", klo_error_get_message());
+        [NSApp terminate:nil];
+        return;
+    }
+    
+    /* Override with macOS-specific default hotkey */
+    err = set_config_string(&_cfg.hotkey, "Command+Option+Shift+Slash");
+    if (err != KLO_OK) {
+        klo_log(KLO_LOG_FATAL, "Failed to set default hotkey: %s", klo_error_get_message());
+        [NSApp terminate:nil];
+        return;
+    }
+    
+    /* Try to load from file, keep defaults if failed */
+    err = load_config([_configPath fileSystemRepresentation], &_cfg);
+    if (err != KLO_OK) {
+        /* File doesn't exist or is corrupted, save defaults */
+        klo_log(KLO_LOG_INFO, "Creating default configuration file");
         save_config([_configPath fileSystemRepresentation], &_cfg);
     }
-    if (!_cfg.hotkey[0]) {
-        strcpy(_cfg.hotkey, "Command+Option+Shift+Slash");
+    
+    /* Validate hotkey field */
+    if (!_cfg.hotkey || !_cfg.hotkey[0]) {
+        err = set_config_string(&_cfg.hotkey, "Command+Option+Shift+Slash");
+        if (err != KLO_OK) {
+            klo_log(KLO_LOG_FATAL, "Failed to restore default hotkey: %s", klo_error_get_message());
+            [NSApp terminate:nil];
+            return;
+        }
     }
 }
 

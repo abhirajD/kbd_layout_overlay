@@ -6,27 +6,14 @@
 #include "../shared/overlay.h"
 #include "../shared/hotkey.h"
 #include "../shared/monitor.h"
+#include "../shared/error.h"
+#include "../shared/app_context.h"
 #include "resource.h"
 
-static Overlay g_overlay;
-static OverlayCache g_cache;
-static HBITMAP g_bitmap;
-static void *g_bits;
-static HWND g_hwnd;
+/* Single global application context replaces all previous globals */
+static klo_app_context_t g_app_ctx;
 
-// Cached graphics resources
-static HDC g_screen_dc = NULL;
-static HDC g_mem_dc = NULL;
-static Config g_cfg;
-static NOTIFYICONDATAA g_nid;
-static char g_cfg_path[MAX_PATH] = "config.cfg";
 #define WM_TRAY (WM_APP + 1)
-
-static UINT g_hotkey_vk;
-static UINT g_hotkey_mods;
-static int g_hotkey_active;
-static int g_visible;
-static HHOOK g_hook;
 
 static void set_autostart(int enable) {
     HKEY key;
@@ -45,56 +32,56 @@ static void set_autostart(int enable) {
     }
 }
 
-static void parse_hotkey_win(const char *hotkey, UINT *mods, UINT *vk) {
+static void parse_hotkey_win(const char *hotkey, klo_hotkey_context_t *hk_ctx) {
     hotkey_t hk;
     parse_hotkey(hotkey, &hk);
 
-    *mods = 0;
-    if (hk.mods & HOTKEY_MOD_CTRL) *mods |= MOD_CONTROL;
-    if (hk.mods & HOTKEY_MOD_ALT) *mods |= MOD_ALT;
-    if (hk.mods & HOTKEY_MOD_SHIFT) *mods |= MOD_SHIFT;
-    if (hk.mods & HOTKEY_MOD_SUPER) *mods |= MOD_WIN;
+    hk_ctx->modifiers = 0;
+    if (hk.mods & HOTKEY_MOD_CTRL) hk_ctx->modifiers |= MOD_CONTROL;
+    if (hk.mods & HOTKEY_MOD_ALT) hk_ctx->modifiers |= MOD_ALT;
+    if (hk.mods & HOTKEY_MOD_SHIFT) hk_ctx->modifiers |= MOD_SHIFT;
+    if (hk.mods & HOTKEY_MOD_SUPER) hk_ctx->modifiers |= MOD_WIN;
 
-    if (hk.key >= 'A' && hk.key <= 'Z') *vk = hk.key;
-    else if (hk.key >= '0' && hk.key <= '9') *vk = hk.key;
-    else if (hk.key == '/') *vk = VK_OEM_2;
-    else *vk = VK_OEM_2;
+    if (hk.key >= 'A' && hk.key <= 'Z') hk_ctx->virtual_key = hk.key;
+    else if (hk.key >= '0' && hk.key <= '9') hk_ctx->virtual_key = hk.key;
+    else if (hk.key == '/') hk_ctx->virtual_key = VK_OEM_2;
+    else hk_ctx->virtual_key = VK_OEM_2;
 }
 
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION && !g_cfg.persistent && g_hotkey_active) {
+    if (nCode == HC_ACTION && !g_app_ctx.config.persistent && g_app_ctx.hotkey.is_active) {
         if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
             KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
             int hide = 0;
-            if (k->vkCode == g_hotkey_vk) hide = 1;
-            if (!hide && (g_hotkey_mods & MOD_CONTROL) &&
+            if (k->vkCode == g_app_ctx.hotkey.virtual_key) hide = 1;
+            if (!hide && (g_app_ctx.hotkey.modifiers & MOD_CONTROL) &&
                 (k->vkCode == VK_LCONTROL || k->vkCode == VK_RCONTROL)) hide = 1;
-            if (!hide && (g_hotkey_mods & MOD_ALT) &&
+            if (!hide && (g_app_ctx.hotkey.modifiers & MOD_ALT) &&
                 (k->vkCode == VK_LMENU || k->vkCode == VK_RMENU)) hide = 1;
-            if (!hide && (g_hotkey_mods & MOD_SHIFT) &&
+            if (!hide && (g_app_ctx.hotkey.modifiers & MOD_SHIFT) &&
                 (k->vkCode == VK_LSHIFT || k->vkCode == VK_RSHIFT)) hide = 1;
-            if (!hide && (g_hotkey_mods & MOD_WIN) &&
+            if (!hide && (g_app_ctx.hotkey.modifiers & MOD_WIN) &&
                 (k->vkCode == VK_LWIN || k->vkCode == VK_RWIN)) hide = 1;
             if (hide) {
-                ShowWindow(g_hwnd, SW_HIDE);
-                g_hotkey_active = 0;
-                g_visible = 0;
+                ShowWindow((HWND)g_app_ctx.ui.window, SW_HIDE);
+                g_app_ctx.hotkey.is_active = 0;
+                g_app_ctx.ui.is_visible = 0;
             }
         }
     }
-    return CallNextHookEx(g_hook, nCode, wParam, lParam);
+    return CallNextHookEx((HHOOK)g_app_ctx.hotkey.hook, nCode, wParam, lParam);
 }
 
-static int get_target_monitor_info(MonitorInfo *info) {
-    if (g_cfg.monitor == 0) {
+static int get_target_monitor_info(klo_app_context_t *ctx, MonitorInfo *info) {
+    if (ctx->config.monitor == 0) {
         // Auto: use active monitor
         return get_active_monitor(info);
-    } else if (g_cfg.monitor == 1) {
+    } else if (ctx->config.monitor == 1) {
         // Primary monitor
         return get_primary_monitor(info);
     } else {
         // Specific monitor (2, 3, etc.)
-        if (get_monitor_info(g_cfg.monitor, info) == 0) {
+        if (get_monitor_info(ctx->config.monitor, info) == 0) {
             return 0;
         }
     }
@@ -103,9 +90,9 @@ static int get_target_monitor_info(MonitorInfo *info) {
     return get_primary_monitor(info);
 }
 
-static int get_target_monitor_size(int *width, int *height) {
+static int get_target_monitor_size(klo_app_context_t *ctx, int *width, int *height) {
     MonitorInfo info;
-    if (get_target_monitor_info(&info) == 0) {
+    if (get_target_monitor_info(ctx, &info) == 0) {
         *width = info.width;
         *height = info.height;
         return 0;
@@ -117,11 +104,11 @@ static int get_target_monitor_size(int *width, int *height) {
     return 0;
 }
 
-static int init_bitmap(void) {
-    const char *path = g_cfg.overlay_path[0] ? g_cfg.overlay_path : "keymap.png";
+static int init_bitmap(klo_app_context_t *ctx) {
+    const char *path = (ctx->config.overlay_path && ctx->config.overlay_path[0]) ? ctx->config.overlay_path : "keymap.png";
     int screen_w, screen_h;
-    get_target_monitor_size(&screen_w, &screen_h);
-    int r = load_overlay_image(path, screen_w, screen_h, &g_overlay);
+    get_target_monitor_size(ctx, &screen_w, &screen_h);
+    int r = load_overlay_image(path, screen_w, screen_h, &ctx->overlay);
     if (r != OVERLAY_OK) {
         const char *fmt;
         if (r == OVERLAY_ERR_NOT_FOUND)
@@ -140,7 +127,7 @@ static int init_bitmap(void) {
             DWORD size = SizeofResource(NULL, res);
             void *ptr = LockResource(data);
             if (ptr && size) {
-                r = load_overlay_image_mem(ptr, (int)size, screen_w, screen_h, &g_overlay);
+                r = load_overlay_image_mem(ptr, (int)size, screen_w, screen_h, &ctx->overlay);
             }
         }
         if (r != OVERLAY_OK) {
@@ -149,19 +136,19 @@ static int init_bitmap(void) {
         }
     }
     // Initialize cache asynchronously for faster startup
-    if (init_overlay_cache_async(&g_cache, &g_overlay) != OVERLAY_OK) {
+    if (init_overlay_cache_async(&ctx->overlay_cache, &ctx->overlay) != OVERLAY_OK) {
         // Fallback to synchronous cache if async fails
-        if (init_overlay_cache(&g_cache, &g_overlay) != OVERLAY_OK) {
+        if (init_overlay_cache(&ctx->overlay_cache, &ctx->overlay) != OVERLAY_OK) {
             MessageBoxA(NULL, "Failed to initialize image cache", "Error", MB_OK);
             return 0;
         }
     }
 
     // Get initial cached variation (may not be ready yet if async)
-    const Overlay *cached = get_cached_variation(&g_cache, g_cfg.opacity, g_cfg.invert);
+    const Overlay *cached = get_cached_variation(&ctx->overlay_cache, ctx->config.opacity, ctx->config.invert);
     if (!cached) {
         // Cache not ready yet - use original image temporarily
-        cached = &g_overlay;
+        cached = &ctx->overlay;
     }
 
     BITMAPV5HEADER bi = {0};
@@ -177,71 +164,71 @@ static int init_bitmap(void) {
     bi.bV5AlphaMask = 0xFF000000;
 
     HDC hdc = GetDC(NULL);
-    g_bits = NULL;
-    g_bitmap = CreateDIBSection(hdc, (BITMAPINFO *)&bi, DIB_RGB_COLORS,
-                                &g_bits, NULL, 0);
-    if (!g_bitmap) {
+    ctx->graphics.bitmap_bits = NULL;
+    ctx->graphics.bitmap = (klo_bitmap_t)CreateDIBSection(hdc, (BITMAPINFO *)&bi, DIB_RGB_COLORS,
+                                &ctx->graphics.bitmap_bits, NULL, 0);
+    if (!ctx->graphics.bitmap) {
         ReleaseDC(NULL, hdc);
         return 0;
     }
-    memcpy(g_bits, cached->data, (size_t)cached->width * cached->height * 4);
+    memcpy(ctx->graphics.bitmap_bits, cached->data, (size_t)cached->width * cached->height * 4);
     ReleaseDC(NULL, hdc);
     return 1;
 }
 
-static int init_graphics_resources(void) {
-    g_screen_dc = GetDC(NULL);
-    if (!g_screen_dc) return 0;
+static int init_graphics_resources(klo_app_context_t *ctx) {
+    ctx->graphics.screen_dc = (klo_device_context_t)GetDC(NULL);
+    if (!ctx->graphics.screen_dc) return 0;
     
-    g_mem_dc = CreateCompatibleDC(g_screen_dc);
-    if (!g_mem_dc) {
-        ReleaseDC(NULL, g_screen_dc);
-        g_screen_dc = NULL;
+    ctx->graphics.mem_dc = (klo_device_context_t)CreateCompatibleDC((HDC)ctx->graphics.screen_dc);
+    if (!ctx->graphics.mem_dc) {
+        ReleaseDC(NULL, (HDC)ctx->graphics.screen_dc);
+        ctx->graphics.screen_dc = NULL;
         return 0;
     }
     
     return 1;
 }
 
-static void cleanup_graphics_resources(void) {
-    if (g_mem_dc) {
-        DeleteDC(g_mem_dc);
-        g_mem_dc = NULL;
+static void cleanup_graphics_resources(klo_app_context_t *ctx) {
+    if (ctx->graphics.mem_dc) {
+        DeleteDC((HDC)ctx->graphics.mem_dc);
+        ctx->graphics.mem_dc = NULL;
     }
-    if (g_screen_dc) {
-        ReleaseDC(NULL, g_screen_dc);
-        g_screen_dc = NULL;
-    }
-}
-
-static void update_bitmap_from_cache(void) {
-    const Overlay *cached = get_cached_variation(&g_cache, g_cfg.opacity, g_cfg.invert);
-    if (cached && g_bits) {
-        memcpy(g_bits, cached->data, (size_t)cached->width * cached->height * 4);
+    if (ctx->graphics.screen_dc) {
+        ReleaseDC(NULL, (HDC)ctx->graphics.screen_dc);
+        ctx->graphics.screen_dc = NULL;
     }
 }
 
-static void position_window_on_monitor(void) {
+static void update_bitmap_from_cache(klo_app_context_t *ctx) {
+    const Overlay *cached = get_cached_variation(&ctx->overlay_cache, ctx->config.opacity, ctx->config.invert);
+    if (cached && ctx->graphics.bitmap_bits) {
+        memcpy(ctx->graphics.bitmap_bits, cached->data, (size_t)cached->width * cached->height * 4);
+    }
+}
+
+static void position_window_on_monitor(klo_app_context_t *ctx) {
     MonitorInfo info;
-    if (get_target_monitor_info(&info) == 0) {
+    if (get_target_monitor_info(ctx, &info) == 0) {
         // Position at bottom center of the target monitor
-        int x = info.x + (info.width - g_cache.base_width) / 2;
-        int y = info.y + info.height - g_cache.base_height - 50; // 50px from bottom
-        SetWindowPos(g_hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        int x = info.x + (info.width - ctx->overlay_cache.base_width) / 2;
+        int y = info.y + info.height - ctx->overlay_cache.base_height - 50; // 50px from bottom
+        SetWindowPos((HWND)ctx->ui.window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     }
 }
 
-static void update_window(void) {
-    if (!g_screen_dc || !g_mem_dc || !g_bitmap) return;
+static void update_window(klo_app_context_t *ctx) {
+    if (!ctx->graphics.screen_dc || !ctx->graphics.mem_dc || !ctx->graphics.bitmap) return;
     
-    SelectObject(g_mem_dc, g_bitmap);
+    SelectObject((HDC)ctx->graphics.mem_dc, (HBITMAP)ctx->graphics.bitmap);
 
     // Use cache dimensions (all variations should have same dimensions)
-    SIZE size = {g_cache.base_width, g_cache.base_height};
+    SIZE size = {ctx->overlay_cache.base_width, ctx->overlay_cache.base_height};
     POINT src = {0, 0};
     POINT dst = {0, 0};
     BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    if (!UpdateLayeredWindow(g_hwnd, g_screen_dc, &dst, &size, g_mem_dc, &src, 0, &bf, ULW_ALPHA)) {
+    if (!UpdateLayeredWindow((HWND)ctx->ui.window, (HDC)ctx->graphics.screen_dc, &dst, &size, (HDC)ctx->graphics.mem_dc, &src, 0, &bf, ULW_ALPHA)) {
         DWORD err = GetLastError();
         char buf[128];
         snprintf(buf, sizeof(buf), "UpdateLayeredWindow failed: %lu\n", (unsigned long)err);
@@ -250,99 +237,109 @@ static void update_window(void) {
 }
 
 static void show_tray_menu(HWND hwnd) {
+    klo_app_context_t *ctx = (klo_app_context_t*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    if (!ctx) ctx = &g_app_ctx;
+
     HMENU menu = CreatePopupMenu();
-    AppendMenuA(menu, MF_STRING | (g_cfg.autostart ? MF_CHECKED : 0), 1, "Start at login");
-    AppendMenuA(menu, MF_STRING | (g_cfg.persistent ? MF_CHECKED : 0), 5, "Persistent mode");
-    AppendMenuA(menu, MF_STRING | (g_cfg.invert ? MF_CHECKED : 0), 3, "Invert colors");
+    AppendMenuA(menu, MF_STRING | (ctx->config.autostart ? MF_CHECKED : 0), 1, "Start at login");
+    AppendMenuA(menu, MF_STRING | (ctx->config.persistent ? MF_CHECKED : 0), 5, "Persistent mode");
+    AppendMenuA(menu, MF_STRING | (ctx->config.invert ? MF_CHECKED : 0), 3, "Invert colors");
     AppendMenuA(menu, MF_STRING, 4, "Cycle opacity");
     // Show current monitor status
     char monitor_text[64];
-    if (g_cfg.monitor == 0) {
-        strcpy(monitor_text, "Cycle monitor (Auto)");
+    if (ctx->config.monitor == 0) {
+        strncpy(monitor_text, "Cycle monitor (Auto)", sizeof(monitor_text) - 1);
+        monitor_text[sizeof(monitor_text) - 1] = '\0';
     } else {
-        snprintf(monitor_text, sizeof(monitor_text), "Cycle monitor (%d)", g_cfg.monitor);
+        snprintf(monitor_text, sizeof(monitor_text), "Cycle monitor (%d)", ctx->config.monitor);
     }
     AppendMenuA(menu, MF_STRING, 6, monitor_text);
     AppendMenuA(menu, MF_STRING, 2, "Quit");
     POINT p; GetCursorPos(&p);
-    SetForegroundWindow(hwnd);
-    TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, p.x, p.y, 0, hwnd, NULL);
+    SetForegroundWindow((HWND)ctx->ui.window ? (HWND)ctx->ui.window : hwnd);
+    TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN, p.x, p.y, 0, (HWND)(ctx->ui.window ? ctx->ui.window : hwnd), NULL);
     DestroyMenu(menu);
 }
 
 static void on_hotkey(HWND hwnd) {
-    if (g_cfg.persistent) {
-        g_visible = !g_visible;
-        if (g_visible) {
-            position_window_on_monitor();
-            ShowWindow(hwnd, SW_SHOW);
-            update_window();
+    klo_app_context_t *ctx = (klo_app_context_t*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    if (!ctx) ctx = &g_app_ctx;
+
+    if (ctx->config.persistent) {
+        ctx->ui.is_visible = !ctx->ui.is_visible;
+        if (ctx->ui.is_visible) {
+            position_window_on_monitor(ctx);
+            ShowWindow((HWND)ctx->ui.window, SW_SHOW);
+            update_window(ctx);
         } else {
-            ShowWindow(hwnd, SW_HIDE);
+            ShowWindow((HWND)ctx->ui.window, SW_HIDE);
         }
     } else {
-        g_hotkey_active = 1;
-        g_visible = 1;
-        position_window_on_monitor();
-        ShowWindow(hwnd, SW_SHOW);
-        update_window();
+        ctx->hotkey.is_active = 1;
+        ctx->ui.is_visible = 1;
+        position_window_on_monitor(ctx);
+        ShowWindow((HWND)ctx->ui.window, SW_SHOW);
+        update_window(ctx);
     }
 }
 
 static void on_command(HWND hwnd, WPARAM wParam) {
+    klo_app_context_t *ctx = (klo_app_context_t*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    if (!ctx) ctx = &g_app_ctx;
+
     switch (LOWORD(wParam)) {
     case 1:
-        g_cfg.autostart = !g_cfg.autostart;
-        set_autostart(g_cfg.autostart);
-        save_config(g_cfg_path, &g_cfg);
+        ctx->config.autostart = !ctx->config.autostart;
+        set_autostart(ctx->config.autostart);
+        klo_context_save_config(ctx);
         break;
     case 2:
         PostMessage(hwnd, WM_CLOSE, 0, 0);
         break;
     case 3:
-        g_cfg.invert = !g_cfg.invert;
-        update_bitmap_from_cache();
-        update_window();
-        save_config(g_cfg_path, &g_cfg);
+        ctx->config.invert = !ctx->config.invert;
+        update_bitmap_from_cache(ctx);
+        update_window(ctx);
+        klo_context_save_config(ctx);
         break;
     case 4: {
         float levels[] = {0.25f, 0.5f, 0.75f, 1.0f};
         int count = sizeof(levels) / sizeof(levels[0]);
         int next = 0;
         for (int i = 0; i < count; i++) {
-            if (g_cfg.opacity <= levels[i] + 0.001f) {
+            if (ctx->config.opacity <= levels[i] + 0.001f) {
                 next = (i + 1) % count;
                 break;
             }
         }
-        g_cfg.opacity = levels[next];
-        update_bitmap_from_cache();
-        update_window();
-        save_config(g_cfg_path, &g_cfg);
+        ctx->config.opacity = levels[next];
+        update_bitmap_from_cache(ctx);
+        update_window(ctx);
+        klo_context_save_config(ctx);
         break;
     }
     case 5:
-        g_cfg.persistent = !g_cfg.persistent;
+        ctx->config.persistent = !ctx->config.persistent;
         // Dynamically manage keyboard hook based on persistent mode
-        if (g_cfg.persistent && g_hook) {
-            UnhookWindowsHookEx(g_hook);
-            g_hook = NULL;
-        } else if (!g_cfg.persistent && !g_hook) {
-            g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+        if (ctx->config.persistent && ctx->hotkey.hook) {
+            UnhookWindowsHookEx((HHOOK)ctx->hotkey.hook);
+            ctx->hotkey.hook = NULL;
+        } else if (!ctx->config.persistent && !ctx->hotkey.hook) {
+            ctx->hotkey.hook = (klo_hook_t)SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
         }
         // Hide overlay if switching to persistent mode while visible
-        if (g_cfg.persistent && g_visible) {
-            ShowWindow(hwnd, SW_HIDE);
-            g_visible = 0;
-            g_hotkey_active = 0;
+        if (ctx->config.persistent && ctx->ui.is_visible) {
+            ShowWindow((HWND)ctx->ui.window, SW_HIDE);
+            ctx->ui.is_visible = 0;
+            ctx->hotkey.is_active = 0;
         }
-        save_config(g_cfg_path, &g_cfg);
+        klo_context_save_config(ctx);
         break;
     case 6: {
         // Cycle through monitors: 0=auto, 1=primary, 2=secondary, etc.
         int monitor_count = get_monitor_count();
-        g_cfg.monitor = (g_cfg.monitor + 1) % (monitor_count + 1); // +1 for auto mode
-        save_config(g_cfg_path, &g_cfg);
+        ctx->config.monitor = (ctx->config.monitor + 1) % (monitor_count + 1); // +1 for auto mode
+        klo_context_save_config(ctx);
         break;
     }
     }
@@ -350,11 +347,18 @@ static void on_command(HWND hwnd, WPARAM wParam) {
 }
 
 static void on_destroy(void) {
-    Shell_NotifyIconA(NIM_DELETE, &g_nid);
-    UnregisterHotKey(NULL, 1);
-    if (g_hook) UnhookWindowsHookEx(g_hook);
-    cleanup_graphics_resources();
-    free_overlay_cache(&g_cache);
+    Shell_NotifyIconA(NIM_DELETE, &g_app_ctx.ui.tray_icon);
+    if (g_app_ctx.hotkey.is_registered) {
+        UnregisterHotKey(NULL, 1);
+        g_app_ctx.hotkey.is_registered = 0;
+    }
+    if (g_app_ctx.hotkey.hook) {
+        UnhookWindowsHookEx((HHOOK)g_app_ctx.hotkey.hook);
+        g_app_ctx.hotkey.hook = NULL;
+    }
+    cleanup_graphics_resources(&g_app_ctx);
+    free_overlay_cache(&g_app_ctx.overlay_cache);
+    free_config(&g_app_ctx.config);
     PostQuitMessage(0);
 }
 
@@ -378,32 +382,61 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     return 0;
 }
 
-static void load_default_config(void) {
-    strcpy(g_cfg.overlay_path, "keymap.png");
-    g_cfg.opacity = 1.0f;
-    g_cfg.invert = 0;
-    g_cfg.autostart = 0;
-    strcpy(g_cfg.hotkey, "Ctrl+Alt+Shift+Slash");
-    g_cfg.persistent = 0;
-    save_config(g_cfg_path, &g_cfg);
+/* Windows-specific error handler */
+static void windows_error_handler(const klo_error_context_t *ctx) {
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s\n\nFile: %s:%d\nFunction: %s", 
+             ctx->message, ctx->file, ctx->line, ctx->function);
+    MessageBoxA(NULL, buf, "Keyboard Layout Overlay Error", MB_OK | MB_ICONERROR);
 }
 
-static void init_config(void) {
-    if (load_config(g_cfg_path, &g_cfg) != 0) {
-        load_default_config();
+static void load_default_config(void) {
+    /* Initialize application context with defaults and save */
+    klo_error_t err = klo_context_init(&g_app_ctx, "config.cfg");
+    if (err != KLO_OK) {
+        MessageBoxA(NULL, klo_error_get_message(), "Configuration Error", MB_OK | MB_ICONERROR);
+        exit(1);
     }
-    if (!g_cfg.hotkey[0]) {
-        strcpy(g_cfg.hotkey, "Ctrl+Alt+Shift+Slash");
+    klo_context_save_config(&g_app_ctx);
+}
+
+static void init_windows_config(void) {
+    /* Initialize error handling first */
+    klo_error_init(windows_error_handler);
+    
+    /* Initialize application context */
+    klo_error_t err = klo_context_init(&g_app_ctx, "config.cfg");
+    if (err != KLO_OK) {
+        klo_log(KLO_LOG_FATAL, "Failed to initialize application context: %s", klo_error_get_message());
+        exit(1);
     }
-    set_autostart(g_cfg.autostart);
+    
+    /* Try to load configuration from file */
+    err = klo_context_load_config(&g_app_ctx);
+    if (err != KLO_OK) {
+        /* File doesn't exist or is corrupted, save defaults */
+        klo_log(KLO_LOG_INFO, "Creating default configuration file");
+        klo_context_save_config(&g_app_ctx);
+    }
+    
+    /* Validate hotkey field */
+    if (!g_app_ctx.config.hotkey || !g_app_ctx.config.hotkey[0]) {
+        err = set_config_string(&g_app_ctx.config.hotkey, "Ctrl+Alt+Shift+Slash");
+        if (err != KLO_OK) {
+            klo_log(KLO_LOG_FATAL, "Failed to set default hotkey: %s", klo_error_get_message());
+            exit(1);
+        }
+    }
+    
+    set_autostart(g_app_ctx.config.autostart);
 }
 
 static int init_overlay_window(HINSTANCE hInst) {
-    if (!init_bitmap()) {
+    if (!init_bitmap(&g_app_ctx)) {
         return 0;
     }
 
-    if (!init_graphics_resources()) {
+    if (!init_graphics_resources(&g_app_ctx)) {
         return 0;
     }
 
@@ -413,34 +446,45 @@ static int init_overlay_window(HINSTANCE hInst) {
     wc.lpszClassName = "kbd_layout_overlay";
     RegisterClassA(&wc);
 
-    g_hwnd = CreateWindowExA(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        wc.lpszClassName, "", WS_POPUP, 0, 0, g_overlay.width, g_overlay.height,
+    g_app_ctx.ui.window = (klo_window_handle_t)CreateWindowExA(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        wc.lpszClassName, "", WS_POPUP, 0, 0, g_app_ctx.overlay.width, g_app_ctx.overlay.height,
         NULL, NULL, hInst, NULL);
 
-    ShowWindow(g_hwnd, SW_HIDE);
+    /* Store pointer to context on the window for use in WndProc if needed */
+    SetWindowLongPtr((HWND)g_app_ctx.ui.window, GWLP_USERDATA, (LONG_PTR)&g_app_ctx);
 
-    g_nid.cbSize = sizeof(g_nid);
-    g_nid.hWnd = g_hwnd;
-    g_nid.uID = 1;
-    g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-    g_nid.uCallbackMessage = WM_TRAY;
-    g_nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-    lstrcpyA(g_nid.szTip, "Keyboard Layout Overlay");
-    Shell_NotifyIconA(NIM_ADD, &g_nid);
+    ShowWindow((HWND)g_app_ctx.ui.window, SW_HIDE);
+
+    {
+        NOTIFYICONDATAA nid = {0};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = (HWND)g_app_ctx.ui.window;
+        nid.uID = 1;
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAY;
+        nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+        strncpy(nid.szTip, "Keyboard Layout Overlay", sizeof(nid.szTip) - 1);
+        nid.szTip[sizeof(nid.szTip) - 1] = '\0';
+        Shell_NotifyIconA(NIM_ADD, &nid);
+        /* store a copy in the UI context for later removal */
+        memcpy(&g_app_ctx.ui.tray_icon, &nid, sizeof(g_app_ctx.ui.tray_icon));
+    }
 
     return 1;
 }
 
 static void register_hotkey(void) {
-    parse_hotkey_win(g_cfg.hotkey, &g_hotkey_mods, &g_hotkey_vk);
-    RegisterHotKey(NULL, 1, g_hotkey_mods | MOD_NOREPEAT, g_hotkey_vk);
-    if (!g_cfg.persistent) {
-        g_hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+    /* Populate platform hotkey context from config */
+    parse_hotkey_win(g_app_ctx.config.hotkey, &g_app_ctx.hotkey);
+    RegisterHotKey(NULL, 1, g_app_ctx.hotkey.modifiers | MOD_NOREPEAT, g_app_ctx.hotkey.virtual_key);
+    g_app_ctx.hotkey.is_registered = 1;
+    if (!g_app_ctx.config.persistent) {
+        g_app_ctx.hotkey.hook = (klo_hook_t)SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
     }
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow) {
-    init_config();
+    init_windows_config();
     if (!init_overlay_window(hInst)) {
         return 0;
     }
@@ -452,8 +496,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
         DispatchMessage(&msg);
     }
 
-    DeleteObject(g_bitmap);
-    free_overlay(&g_overlay);
+    if (g_app_ctx.graphics.bitmap) {
+        DeleteObject((HGDIOBJ)g_app_ctx.graphics.bitmap);
+        g_app_ctx.graphics.bitmap = NULL;
+    }
+    free_overlay(&g_app_ctx.overlay);
     return 0;
 }
-

@@ -1,0 +1,76 @@
+name: CI Build (Windows + macOS)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show runner info
+        run: |
+          echo "Runner OS: $RUNNER_OS"
+          uname -a || ver
+        shell: bash
+
+      - name: Prepare environment (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "Windows runner detected"
+        shell: cmd
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        run: build_windows.bat
+        working-directory: windows
+        shell: cmd
+
+      - name: Collect Windows build artifacts
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            windows/kbd_layout_overlay.exe
+            windows/*.zip
+
+      - name: Prepare environment (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          echo "macOS runner detected"
+          chmod +x ./build_macos.sh
+        shell: bash
+
+      - name: Build (macOS)
+        if: matrix.os == 'macos-latest'
+        run: ./build_macos.sh
+        working-directory: macos
+        shell: bash
+
+      - name: Collect macOS build artifacts
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: |
+            macos/build/Kbd Layout Overlay.app
+            macos/build/*.zip
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.os }}
+          path: |
+            ${{ github.workspace }}/.github/workflows/ci.yml
