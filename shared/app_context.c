@@ -206,6 +206,7 @@ klo_error_t klo_hotkey_unregister(klo_hotkey_context_t *hk) {
 }
 #endif
 
+#ifndef _WIN32
 /* UI context implementation - platform-agnostic base */
 klo_error_t klo_ui_init(klo_ui_context_t *ui) {
     KLO_CHECK_PARAM(ui);
@@ -249,3 +250,4 @@ klo_error_t klo_ui_update_position(klo_ui_context_t *ui, int x, int y) {
     /* Platform-specific position update */
     return KLO_OK;
 }
+#endif

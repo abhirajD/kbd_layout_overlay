@@ -28,14 +28,17 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           echo "Windows runner detected"
+          cmake --version
         shell: cmd
 
-      - name: Build (Windows)
+      - name: Configure & Build (Windows via CMake)
         if: matrix.os == 'windows-latest'
         run: |
-          build_windows.bat > build.log 2>&1
-          type build.log
-        working-directory: windows
+          rem Configure for Visual Studio generator (x64)
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          cmake --build build --config Release
+          cmake --build build --config Release --target install || echo "install target not configured"
+        working-directory: ${{ github.workspace }}
         shell: cmd
 
       - name: Collect Windows build artifacts
@@ -44,22 +47,22 @@ jobs:
         with:
           name: windows-build
           path: |
-            windows/kbd_layout_overlay.exe
-            windows/*.zip
+            build/Release/kbd_layout_overlay.exe
+            build/*.zip
 
       - name: Prepare environment (macOS)
         if: matrix.os == 'macos-latest'
         run: |
           echo "macOS runner detected"
-          chmod +x ./build_macos.sh
+          cmake --version
         shell: bash
 
-      - name: Build (macOS)
+      - name: Configure & Build (macOS via CMake)
         if: matrix.os == 'macos-latest'
         run: |
-          ./build_macos.sh > build.log 2>&1 || true
-          cat build.log
-        working-directory: macos
+          cmake -S . -B build
+          cmake --build build --config Release
+        working-directory: ${{ github.workspace }}
         shell: bash
 
       - name: Collect macOS build artifacts
@@ -68,8 +71,8 @@ jobs:
         with:
           name: macos-build
           path: |
-            macos/build/Kbd Layout Overlay.app
-            macos/build/*.zip
+            build/KbdLayoutOverlay.app
+            build/*.zip
 
       - name: Upload build logs
         if: always()
@@ -77,5 +80,5 @@ jobs:
         with:
           name: build-logs-${{ matrix.os }}
           path: |
-            windows/build.log
-            macos/build.log
+            build/build.log
+            build/build.log || true
