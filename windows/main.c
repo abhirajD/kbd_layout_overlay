@@ -10,8 +10,7 @@
 #include "../shared/app_context.h"
 #include "resource.h"
 
-/* Single global application context replaces all previous globals */
-static klo_app_context_t g_app_ctx;
+static DWORD g_tls_index = TLS_OUT_OF_INDEXES;
 
 #define WM_TRAY (WM_APP + 1)
 
@@ -49,27 +48,34 @@ static void parse_hotkey_win(const char *hotkey, klo_hotkey_context_t *hk_ctx) {
 }
 
 static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION && !g_app_ctx.config.persistent && g_app_ctx.hotkey.is_active) {
+    /* Prefer context from TLS; fall back to global context */
+    klo_app_context_t *ctx = NULL;
+    if (g_tls_index != TLS_OUT_OF_INDEXES) {
+        ctx = (klo_app_context_t*)TlsGetValue(g_tls_index);
+    }
+    if (!ctx) return CallNextHookEx(NULL, nCode, wParam, lParam);
+
+    if (nCode == HC_ACTION && !ctx->config.persistent && ctx->hotkey.is_active) {
         if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
             KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lParam;
             int hide = 0;
-            if (k->vkCode == g_app_ctx.hotkey.virtual_key) hide = 1;
-            if (!hide && (g_app_ctx.hotkey.modifiers & MOD_CONTROL) &&
+            if (k->vkCode == ctx->hotkey.virtual_key) hide = 1;
+            if (!hide && (ctx->hotkey.modifiers & MOD_CONTROL) &&
                 (k->vkCode == VK_LCONTROL || k->vkCode == VK_RCONTROL)) hide = 1;
-            if (!hide && (g_app_ctx.hotkey.modifiers & MOD_ALT) &&
+            if (!hide && (ctx->hotkey.modifiers & MOD_ALT) &&
                 (k->vkCode == VK_LMENU || k->vkCode == VK_RMENU)) hide = 1;
-            if (!hide && (g_app_ctx.hotkey.modifiers & MOD_SHIFT) &&
+            if (!hide && (ctx->hotkey.modifiers & MOD_SHIFT) &&
                 (k->vkCode == VK_LSHIFT || k->vkCode == VK_RSHIFT)) hide = 1;
-            if (!hide && (g_app_ctx.hotkey.modifiers & MOD_WIN) &&
+            if (!hide && (ctx->hotkey.modifiers & MOD_WIN) &&
                 (k->vkCode == VK_LWIN || k->vkCode == VK_RWIN)) hide = 1;
             if (hide) {
-                ShowWindow((HWND)g_app_ctx.ui.window, SW_HIDE);
-                g_app_ctx.hotkey.is_active = 0;
-                g_app_ctx.ui.is_visible = 0;
+                ShowWindow((HWND)ctx->ui.window, SW_HIDE);
+                ctx->hotkey.is_active = 0;
+                ctx->ui.is_visible = 0;
             }
         }
     }
-    return CallNextHookEx((HHOOK)g_app_ctx.hotkey.hook, nCode, wParam, lParam);
+    return CallNextHookEx((HHOOK)ctx->hotkey.hook, nCode, wParam, lParam);
 }
 
 static int get_target_monitor_info(klo_app_context_t *ctx, MonitorInfo *info) {
@@ -238,7 +244,7 @@ static void update_window(klo_app_context_t *ctx) {
 
 static void show_tray_menu(HWND hwnd) {
     klo_app_context_t *ctx = (klo_app_context_t*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
-    if (!ctx) ctx = &g_app_ctx;
+    if (!ctx) return;
 
     HMENU menu = CreatePopupMenu();
     AppendMenuA(menu, MF_STRING | (ctx->config.autostart ? MF_CHECKED : 0), 1, "Start at login");
@@ -263,7 +269,7 @@ static void show_tray_menu(HWND hwnd) {
 
 static void on_hotkey(HWND hwnd) {
     klo_app_context_t *ctx = (klo_app_context_t*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
-    if (!ctx) ctx = &g_app_ctx;
+    if (!ctx) return;
 
     if (ctx->config.persistent) {
         ctx->ui.is_visible = !ctx->ui.is_visible;
@@ -285,7 +291,7 @@ static void on_hotkey(HWND hwnd) {
 
 static void on_command(HWND hwnd, WPARAM wParam) {
     klo_app_context_t *ctx = (klo_app_context_t*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
-    if (!ctx) ctx = &g_app_ctx;
+    if (!ctx) return;
 
     switch (LOWORD(wParam)) {
     case 1:
@@ -321,11 +327,10 @@ static void on_command(HWND hwnd, WPARAM wParam) {
     case 5:
         ctx->config.persistent = !ctx->config.persistent;
         // Dynamically manage keyboard hook based on persistent mode
-        if (ctx->config.persistent && ctx->hotkey.hook) {
-            UnhookWindowsHookEx((HHOOK)ctx->hotkey.hook);
-            ctx->hotkey.hook = NULL;
-        } else if (!ctx->config.persistent && !ctx->hotkey.hook) {
-            ctx->hotkey.hook = (klo_hook_t)SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+        if (ctx->config.persistent) {
+            win_hook_uninstall(ctx);
+        } else {
+            win_hook_install(ctx);
         }
         // Hide overlay if switching to persistent mode while visible
         if (ctx->config.persistent && ctx->ui.is_visible) {
@@ -343,22 +348,35 @@ static void on_command(HWND hwnd, WPARAM wParam) {
         break;
     }
     }
-    }
 }
 
-static void on_destroy(void) {
-    Shell_NotifyIconA(NIM_DELETE, &g_app_ctx.ui.tray_icon);
-    if (g_app_ctx.hotkey.is_registered) {
+static void on_destroy(klo_app_context_t *ctx) {
+    if (!ctx) {
+        /* Nothing we can clean for a missing context */
+        if (g_tls_index != TLS_OUT_OF_INDEXES) {
+            TlsFree(g_tls_index);
+            g_tls_index = TLS_OUT_OF_INDEXES;
+        }
+        PostQuitMessage(0);
+        return;
+    }
+
+    Shell_NotifyIconA(NIM_DELETE, &ctx->ui.tray_icon);
+    if (ctx->hotkey.is_registered) {
         UnregisterHotKey(NULL, 1);
-        g_app_ctx.hotkey.is_registered = 0;
+        ctx->hotkey.is_registered = 0;
     }
-    if (g_app_ctx.hotkey.hook) {
-        UnhookWindowsHookEx((HHOOK)g_app_ctx.hotkey.hook);
-        g_app_ctx.hotkey.hook = NULL;
+    if (ctx->hotkey.hook) {
+        win_hook_uninstall(ctx);
     }
-    cleanup_graphics_resources(&g_app_ctx);
-    free_overlay_cache(&g_app_ctx.overlay_cache);
-    free_config(&g_app_ctx.config);
+    /* Clear TLS slot if allocated (index freed globally once) */
+    if (g_tls_index != TLS_OUT_OF_INDEXES) {
+        TlsFree(g_tls_index);
+        g_tls_index = TLS_OUT_OF_INDEXES;
+    }
+    cleanup_graphics_resources(ctx);
+    free_overlay_cache(&ctx->overlay_cache);
+    free_config(&ctx->config);
     PostQuitMessage(0);
 }
 
@@ -373,9 +391,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     case WM_COMMAND:
         on_command(hwnd, wParam);
         break;
-    case WM_DESTROY:
-        on_destroy();
+    case WM_DESTROY: {
+        klo_app_context_t *ctx = (klo_app_context_t*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+        on_destroy(ctx);
         break;
+    }
     default:
         return DefWindowProc(hwnd, msg, wParam, lParam);
     }
@@ -390,53 +410,53 @@ static void windows_error_handler(const klo_error_context_t *ctx) {
     MessageBoxA(NULL, buf, "Keyboard Layout Overlay Error", MB_OK | MB_ICONERROR);
 }
 
-static void load_default_config(void) {
+static void load_default_config(klo_app_context_t *ctx) {
     /* Initialize application context with defaults and save */
-    klo_error_t err = klo_context_init(&g_app_ctx, "config.cfg");
+    klo_error_t err = klo_context_init(ctx, "config.cfg");
     if (err != KLO_OK) {
         MessageBoxA(NULL, klo_error_get_message(), "Configuration Error", MB_OK | MB_ICONERROR);
         exit(1);
     }
-    klo_context_save_config(&g_app_ctx);
+    klo_context_save_config(ctx);
 }
 
-static void init_windows_config(void) {
+static void init_windows_config(klo_app_context_t *ctx) {
     /* Initialize error handling first */
     klo_error_init(windows_error_handler);
     
     /* Initialize application context */
-    klo_error_t err = klo_context_init(&g_app_ctx, "config.cfg");
+    klo_error_t err = klo_context_init(ctx, "config.cfg");
     if (err != KLO_OK) {
         klo_log(KLO_LOG_FATAL, "Failed to initialize application context: %s", klo_error_get_message());
         exit(1);
     }
     
     /* Try to load configuration from file */
-    err = klo_context_load_config(&g_app_ctx);
+    err = klo_context_load_config(ctx);
     if (err != KLO_OK) {
         /* File doesn't exist or is corrupted, save defaults */
         klo_log(KLO_LOG_INFO, "Creating default configuration file");
-        klo_context_save_config(&g_app_ctx);
+        klo_context_save_config(ctx);
     }
     
     /* Validate hotkey field */
-    if (!g_app_ctx.config.hotkey || !g_app_ctx.config.hotkey[0]) {
-        err = set_config_string(&g_app_ctx.config.hotkey, "Ctrl+Alt+Shift+Slash");
+    if (!ctx->config.hotkey || !ctx->config.hotkey[0]) {
+        err = set_config_string(&ctx->config.hotkey, "Ctrl+Alt+Shift+Slash");
         if (err != KLO_OK) {
             klo_log(KLO_LOG_FATAL, "Failed to set default hotkey: %s", klo_error_get_message());
             exit(1);
         }
     }
     
-    set_autostart(g_app_ctx.config.autostart);
+    set_autostart(ctx->config.autostart);
 }
 
-static int init_overlay_window(HINSTANCE hInst) {
-    if (!init_bitmap(&g_app_ctx)) {
+static int init_overlay_window(HINSTANCE hInst, klo_app_context_t *ctx) {
+    if (!init_bitmap(ctx)) {
         return 0;
     }
 
-    if (!init_graphics_resources(&g_app_ctx)) {
+    if (!init_graphics_resources(ctx)) {
         return 0;
     }
 
@@ -446,19 +466,19 @@ static int init_overlay_window(HINSTANCE hInst) {
     wc.lpszClassName = "kbd_layout_overlay";
     RegisterClassA(&wc);
 
-    g_app_ctx.ui.window = (klo_window_handle_t)CreateWindowExA(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        wc.lpszClassName, "", WS_POPUP, 0, 0, g_app_ctx.overlay.width, g_app_ctx.overlay.height,
+    ctx->ui.window = (klo_window_handle_t)CreateWindowExA(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        wc.lpszClassName, "", WS_POPUP, 0, 0, ctx->overlay.width, ctx->overlay.height,
         NULL, NULL, hInst, NULL);
 
     /* Store pointer to context on the window for use in WndProc if needed */
-    SetWindowLongPtr((HWND)g_app_ctx.ui.window, GWLP_USERDATA, (LONG_PTR)&g_app_ctx);
+    SetWindowLongPtr((HWND)ctx->ui.window, GWLP_USERDATA, (LONG_PTR)ctx);
 
-    ShowWindow((HWND)g_app_ctx.ui.window, SW_HIDE);
+    ShowWindow((HWND)ctx->ui.window, SW_HIDE);
 
     {
         NOTIFYICONDATAA nid = {0};
         nid.cbSize = sizeof(nid);
-        nid.hWnd = (HWND)g_app_ctx.ui.window;
+        nid.hWnd = (HWND)ctx->ui.window;
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAY;
@@ -467,28 +487,54 @@ static int init_overlay_window(HINSTANCE hInst) {
         nid.szTip[sizeof(nid.szTip) - 1] = '\0';
         Shell_NotifyIconA(NIM_ADD, &nid);
         /* store a copy in the UI context for later removal */
-        memcpy(&g_app_ctx.ui.tray_icon, &nid, sizeof(g_app_ctx.ui.tray_icon));
+        memcpy(&ctx->ui.tray_icon, &nid, sizeof(ctx->ui.tray_icon));
     }
 
     return 1;
 }
 
-static void register_hotkey(void) {
+/* Helper to install the global low-level keyboard hook and initialize TLS for a context */
+static void win_hook_install(klo_app_context_t *ctx) {
+    if (g_tls_index == TLS_OUT_OF_INDEXES) {
+        g_tls_index = TlsAlloc();
+    }
+    if (g_tls_index != TLS_OUT_OF_INDEXES) {
+        TlsSetValue(g_tls_index, ctx);
+    }
+    ctx->hotkey.hook = (klo_hook_t)SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+}
+
+/* Helper to uninstall the global low-level keyboard hook and clear TLS for a context.
+   Note: does not free the TLS index itself (freed on shutdown) */
+static void win_hook_uninstall(klo_app_context_t *ctx) {
+    if (ctx->hotkey.hook) {
+        UnhookWindowsHookEx((HHOOK)ctx->hotkey.hook);
+        ctx->hotkey.hook = NULL;
+    }
+    if (g_tls_index != TLS_OUT_OF_INDEXES) {
+        TlsSetValue(g_tls_index, NULL);
+    }
+}
+
+static void register_hotkey(klo_app_context_t *ctx) {
     /* Populate platform hotkey context from config */
-    parse_hotkey_win(g_app_ctx.config.hotkey, &g_app_ctx.hotkey);
-    RegisterHotKey(NULL, 1, g_app_ctx.hotkey.modifiers | MOD_NOREPEAT, g_app_ctx.hotkey.virtual_key);
-    g_app_ctx.hotkey.is_registered = 1;
-    if (!g_app_ctx.config.persistent) {
-        g_app_ctx.hotkey.hook = (klo_hook_t)SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+    parse_hotkey_win(ctx->config.hotkey, &ctx->hotkey);
+    RegisterHotKey(NULL, 1, ctx->hotkey.modifiers | MOD_NOREPEAT, ctx->hotkey.virtual_key);
+    ctx->hotkey.is_registered = 1;
+    if (!ctx->config.persistent) {
+        win_hook_install(ctx);
     }
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow) {
-    init_windows_config();
-    if (!init_overlay_window(hInst)) {
+    klo_app_context_t app_ctx;
+    memset(&app_ctx, 0, sizeof(app_ctx));
+
+    init_windows_config(&app_ctx);
+    if (!init_overlay_window(hInst, &app_ctx)) {
         return 0;
     }
-    register_hotkey();
+    register_hotkey(&app_ctx);
 
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
@@ -496,10 +542,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
         DispatchMessage(&msg);
     }
 
-    if (g_app_ctx.graphics.bitmap) {
-        DeleteObject((HGDIOBJ)g_app_ctx.graphics.bitmap);
-        g_app_ctx.graphics.bitmap = NULL;
+    if (app_ctx.graphics.bitmap) {
+        DeleteObject((HGDIOBJ)app_ctx.graphics.bitmap);
+        app_ctx.graphics.bitmap = NULL;
     }
-    free_overlay(&g_app_ctx.overlay);
+    free_overlay(&app_ctx.overlay);
     return 0;
 }

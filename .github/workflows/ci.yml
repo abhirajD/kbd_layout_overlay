@@ -32,7 +32,9 @@ jobs:
 
       - name: Build (Windows)
         if: matrix.os == 'windows-latest'
-        run: build_windows.bat
+        run: |
+          build_windows.bat > build.log 2>&1
+          type build.log
         working-directory: windows
         shell: cmd
 
@@ -54,7 +56,9 @@ jobs:
 
       - name: Build (macOS)
         if: matrix.os == 'macos-latest'
-        run: ./build_macos.sh
+        run: |
+          ./build_macos.sh > build.log 2>&1 || true
+          cat build.log
         working-directory: macos
         shell: bash
 
@@ -67,10 +71,11 @@ jobs:
             macos/build/Kbd Layout Overlay.app
             macos/build/*.zip
 
-      - name: Upload logs
+      - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs-${{ matrix.os }}
           path: |
-            ${{ github.workspace }}/.github/workflows/ci.yml
+            windows/build.log
+            macos/build.log
