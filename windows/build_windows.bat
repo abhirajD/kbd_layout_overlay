@@ -10,6 +10,25 @@ if not defined VS_PATH (
 )
 call "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
 
+:: Compile resources
 rc /fo resource.res resource.rc
-cl /O2 /arch:SSE2 main.c ..\shared\overlay.c ..\shared\config.c ..\shared\hotkey.c ..\shared\monitor.c ..\shared\error.c ..\shared\app_context.c resource.res user32.lib gdi32.lib advapi32.lib shell32.lib /Fe:kbd_layout_overlay.exe /link /SUBSYSTEM:WINDOWS
+if errorlevel 1 (
+    echo Resource compilation failed.
+    exit /b 1
+)
+
+:: Compile each translation unit to object files (isolates header/include order issues)
+cl /nologo /O2 /arch:SSE2 /c main.c ..\shared\overlay.c ..\shared\config.c ..\shared\hotkey.c ..\shared\monitor.c ..\shared\error.c ..\shared\app_context.c ..\hotkey_win.c
+if errorlevel 1 (
+    echo Compilation failed.
+    exit /b 1
+)
+
+:: Link object files and resource into final executable
+cl /nologo main.obj overlay.obj config.obj hotkey.obj monitor.obj error.obj app_context.obj hotkey_win.obj resource.res user32.lib gdi32.lib advapi32.lib shell32.lib /Fe:kbd_layout_overlay.exe /link /SUBSYSTEM:WINDOWS
+if errorlevel 1 (
+    echo Link failed.
+    exit /b 1
+)
+
 endlocal

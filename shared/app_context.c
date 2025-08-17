@@ -186,10 +186,11 @@ void klo_hotkey_cleanup(klo_hotkey_context_t *hk) {
     memset(hk, 0, sizeof(klo_hotkey_context_t));
 }
 
+#ifndef _WIN32
 klo_error_t klo_hotkey_register(klo_hotkey_context_t *hk, klo_window_handle_t window) {
     KLO_CHECK_PARAM(hk);
     
-    /* Platform-specific implementation */
+    /* Platform-specific implementation (non-Windows default) */
     hk->is_registered = 1;
     return KLO_OK;
 }
@@ -197,10 +198,11 @@ klo_error_t klo_hotkey_register(klo_hotkey_context_t *hk, klo_window_handle_t wi
 klo_error_t klo_hotkey_unregister(klo_hotkey_context_t *hk) {
     KLO_CHECK_PARAM(hk);
     
-    /* Platform-specific implementation */
+    /* Platform-specific implementation (non-Windows default) */
     hk->is_registered = 0;
     return KLO_OK;
 }
+#endif
 
 /* UI context implementation - platform-agnostic base */
 klo_error_t klo_ui_init(klo_ui_context_t *ui) {

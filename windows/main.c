@@ -366,7 +366,8 @@ static void on_destroy(klo_app_context_t *ctx) {
 
     Shell_NotifyIconA(NIM_DELETE, &ctx->ui.tray_icon);
     if (ctx->hotkey.is_registered) {
-        UnregisterHotKey(NULL, 1);
+        /* Use shared adapter to unregister */
+        klo_hotkey_unregister(&ctx->hotkey);
         ctx->hotkey.is_registered = 0;
     }
     if (ctx->hotkey.hook) {
@@ -522,8 +523,14 @@ static void win_hook_uninstall(klo_app_context_t *ctx) {
 static void register_hotkey(klo_app_context_t *ctx) {
     /* Populate platform hotkey context from config */
     parse_hotkey_win(ctx->config.hotkey, &ctx->hotkey);
-    RegisterHotKey(NULL, 1, ctx->hotkey.modifiers | MOD_NOREPEAT, ctx->hotkey.virtual_key);
-    ctx->hotkey.is_registered = 1;
+
+    /* Use shared adapter to register a system hotkey (platform-specific implementation) */
+    if (klo_hotkey_register(&ctx->hotkey, ctx->ui.window) != KLO_OK) {
+        /* If hotkey registration fails, log and continue without it */
+        klo_log(KLO_LOG_WARN, "Failed to register system hotkey");
+    }
+
+    /* Install low-level hook for transient (non-persistent) mode */
     if (!ctx->config.persistent) {
         win_hook_install(ctx);
     }
