@@ -14,6 +14,9 @@ static DWORD g_tls_index = TLS_OUT_OF_INDEXES;
 
 #define WM_TRAY (WM_APP + 1)
 
+static void win_hook_install(klo_app_context_t *ctx);
+static void win_hook_uninstall(klo_app_context_t *ctx);
+
 static void set_autostart(int enable) {
     HKEY key;
     if (RegCreateKeyExA(HKEY_CURRENT_USER,
