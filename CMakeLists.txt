@@ -1,14 +1,43 @@
 cmake_minimum_required(VERSION 3.16)
-project(kbd_layout_overlay LANGUAGES C OBJC)
+project(kbd_layout_overlay LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Generate embedded keymap header if keymap.png exists
+set(KEYMAP_PNG "${CMAKE_SOURCE_DIR}/assets/keymap.png")
+set(KEYMAP_HEADER "${CMAKE_BINARY_DIR}/keymap_embedded.h")
+
+if(EXISTS "${KEYMAP_PNG}")
+    message(STATUS "Found keymap.png, will embed in binary")
+    add_custom_command(
+        OUTPUT "${KEYMAP_HEADER}"
+        COMMAND ${CMAKE_COMMAND} 
+            -DPNG_FILE="${KEYMAP_PNG}"
+            -DHEADER_FILE="${KEYMAP_HEADER}"
+            -P "${CMAKE_SOURCE_DIR}/embed_keymap.cmake"
+        DEPENDS "${KEYMAP_PNG}" "${CMAKE_SOURCE_DIR}/embed_keymap.cmake"
+        COMMENT "Embedding keymap.png into C header"
+    )
+    set(KEYMAP_SOURCES "${KEYMAP_HEADER}")
+    set(EMBED_KEYMAP ON)
+else()
+    message(STATUS "No keymap.png found, using runtime file loading only")
+    set(KEYMAP_SOURCES "")
+    set(EMBED_KEYMAP OFF)
+endif()
+
 # Shared overlay library
 add_library(overlay_lib STATIC 
     shared/overlay.c
+    ${KEYMAP_SOURCES}
 )
 target_include_directories(overlay_lib PUBLIC shared)
+target_include_directories(overlay_lib PRIVATE "${CMAKE_BINARY_DIR}")
+
+if(EMBED_KEYMAP)
+    target_compile_definitions(overlay_lib PRIVATE EMBED_KEYMAP=1)
+endif()
 
 # Windows executable
 if(WIN32)
@@ -21,6 +50,9 @@ if(WIN32)
     if(MSVC)
         target_compile_options(kbd_layout_overlay PRIVATE /W3 /O2)
         target_compile_options(overlay_lib PRIVATE /W3 /O2)
+        # Suppress MSVC warnings about "unsafe" CRT functions used intentionally
+        target_compile_definitions(kbd_layout_overlay PRIVATE _CRT_SECURE_NO_WARNINGS=1)
+        target_compile_definitions(overlay_lib PRIVATE _CRT_SECURE_NO_WARNINGS=1)
     endif()
 endif()
 
@@ -36,4 +68,13 @@ if(APPLE)
     target_compile_options(KbdLayoutOverlay PRIVATE "-fobjc-arc")
     set_target_properties(KbdLayoutOverlay PROPERTIES 
         MACOSX_BUNDLE_BUNDLE_NAME "Kbd Layout Overlay")
+endif()
+
+# Test executable (cross-platform)
+add_executable(test_mvp tests/test_overlay.c)
+target_link_libraries(test_mvp PRIVATE overlay_lib)
+target_include_directories(test_mvp PRIVATE shared)
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mvp PRIVATE pthread)
 endif()

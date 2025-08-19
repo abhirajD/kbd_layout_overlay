@@ -29,6 +29,14 @@ jobs:
       - name: Build
         run: cmake --build build --config Release
 
+      - name: Run tests (macOS)
+        if: matrix.os == 'macos-latest'
+        run: ./build/test_mvp
+
+      - name: Run tests (Windows)
+        if: matrix.os == 'windows-latest'
+        run: build\\Release\\test_mvp.exe
+
       - name: Upload Windows executable
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4

@@ -24,9 +24,20 @@ A lightweight utility that shows a keyboard overlay when you press a hotkey. Sim
 3. Look for tray icon
 4. Press Ctrl+Alt+Shift+/ to show overlay
 
+## Customization (Before Building)
+
+**To embed your own keyboard layout:**
+1. Place your `keymap.png` file in the `assets/` folder
+2. Build the app - it will automatically embed your PNG into the binary
+3. No runtime file dependencies!
+
 ## Building
 
 ```bash
+# 1. OPTIONAL: Add your keymap.png to assets/ folder first
+cp your_keyboard_layout.png assets/keymap.png
+
+# 2. Build normally 
 mkdir build && cd build
 cmake ..
 make                    # macOS/Linux
@@ -34,9 +45,9 @@ make                    # macOS/Linux
 cmake --build .         # Windows
 ```
 
-## Customization
-
-Drop a `keymap.png` file next to the executable to use your own keyboard layout.
+**What happens:**
+- ✅ **keymap.png in assets/?** → Embedded in binary at build time (recommended)
+- ❌ **No keymap.png?** → App tries to load external file at runtime
 
 ## Architecture
 

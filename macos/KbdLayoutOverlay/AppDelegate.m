@@ -1,5 +1,6 @@
 #import "AppDelegate.h"
 #import <Carbon/Carbon.h>
+#import <dispatch/dispatch.h>
 #import "../shared/config.h"
 #import "../shared/overlay.h"
 
@@ -17,7 +18,13 @@
 
 static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent, void *userData) {
     AppDelegate *self = (__bridge AppDelegate *)userData;
-    [self toggleOverlay];
+    /* Ensure UI work is performed on the main thread to reliably show the overlay
+       even when the app is backgrounded. */
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @autoreleasepool {
+            [self toggleOverlay];
+        }
+    });
     return noErr;
 }
 
@@ -45,31 +52,80 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent
 - (void)loadOverlay {
     NSScreen *screen = [NSScreen mainScreen];
     CGFloat scale = [screen backingScaleFactor];
-    int max_w = (int)([screen frame].size.width * scale);
-    int max_h = (int)([screen frame].size.height * scale);
+    int max_w = (int)([screen frame].size.width * scale * _config.scale);
+    int max_h = (int)([screen frame].size.height * scale * _config.scale);
     
-    /* Try keymap.png first */
-    if (load_overlay("keymap.png", max_w, max_h, &_overlay) != 0) {
-        /* Try bundle resource */
-        NSString *path = [[NSBundle mainBundle] pathForResource:@"keymap" ofType:@"png"];
-        if (path && load_overlay([path fileSystemRepresentation], max_w, max_h, &_overlay) != 0) {
-            /* Fallback to embedded default */
-            int size;
-            const unsigned char *data = get_default_keymap(&size);
-            if (load_overlay_mem(data, size, max_w, max_h, &_overlay) != 0) {
-                NSAlert *alert = [[NSAlert alloc] init];
-                [alert setMessageText:@"Failed to load overlay image"];
-                [alert runModal];
-                [NSApp terminate:nil];
-                return;
+    /* Try multiple locations for keymap.png */
+    NSArray *searchPaths = @[
+        @"keymap.png",                                   // Current directory
+        @"assets/keymap.png",                           // Assets folder
+        @"../assets/keymap.png",                        // Assets folder (relative)
+        [[NSBundle mainBundle] pathForResource:@"keymap" ofType:@"png"] ?: @"", // Bundle resource
+    ];
+    
+    OverlayError result = OVERLAY_ERROR_FILE_NOT_FOUND;
+    for (NSString *pathStr in searchPaths) {
+        if ([pathStr length] == 0) continue;
+        
+        const char *path = [pathStr fileSystemRepresentation];
+        result = load_overlay(path, max_w, max_h, &_overlay);
+        if (result == OVERLAY_OK) {
+            NSLog(@"Loaded overlay from: %@", pathStr);
+            break;
+        }
+    }
+    
+    if (result != OVERLAY_OK) {
+        /* Try embedded fallback */
+        int size;
+        const unsigned char *data = get_default_keymap(&size);
+        if (data && size > 0) {
+            result = load_overlay_mem(data, size, max_w, max_h, &_overlay);
+            if (result == OVERLAY_OK) {
+                NSLog(@"Using embedded keymap (build-time)");
             }
         }
+    }
+    
+    if (result != OVERLAY_OK) {
+        NSString *errorTitle = @"Image Loading Failed";
+        NSString *errorMsg = @"Unknown error";
+        
+        switch (result) {
+            case OVERLAY_ERROR_FILE_NOT_FOUND:
+                errorMsg = @"Could not find keymap.png in any location"; break;
+            case OVERLAY_ERROR_DECODE_FAILED:
+                errorMsg = @"Could not decode image file"; break;
+            case OVERLAY_ERROR_OUT_OF_MEMORY:
+                errorMsg = @"Out of memory loading image"; break;
+            case OVERLAY_ERROR_RESIZE_FAILED:
+                errorMsg = @"Failed to resize image"; break;
+            case OVERLAY_ERROR_NULL_PARAM:
+                errorMsg = @"Internal error (null parameter)"; break;
+            case OVERLAY_OK:
+                errorMsg = @"No error"; break;
+        }
+        
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:errorTitle];
+        [alert setInformativeText:[NSString stringWithFormat:@"%@\n\nPlease place keymap.png in one of these locations:\n• assets/ folder (before building)\n• Project root directory\n• App bundle resources", errorMsg]];
+        [alert runModal];
+        [NSApp terminate:nil];
+        return;
     }
     
     [self updateOverlayImage];
 }
 
 - (void)updateOverlayImage {
+    /* Ensure we run on main thread when updating AppKit objects */
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self updateOverlayImage];
+        });
+        return;
+    }
+
     /* Apply current effects */
     apply_effects(&_overlay, _config.opacity, _config.invert);
     
@@ -110,6 +166,11 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent
     [_panel setBackgroundColor:[NSColor clearColor]];
     [_panel setLevel:NSStatusWindowLevel];
     [_panel setIgnoresMouseEvents:YES];
+    /* Allow the overlay panel to appear while the app is in background and on all spaces */
+    [_panel setCollectionBehavior:NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorIgnoresCycle | NSWindowCollectionBehaviorFullScreenAuxiliary];
+    /* Do not force app activation; allow the panel to float without stealing focus */
+    [_panel setBecomesKeyOnlyIfNeeded:YES];
+    [_panel setFloatingPanel:YES];
     
     _imageView = [[NSImageView alloc] initWithFrame:rect];
     [_imageView setImage:_overlayImage];
@@ -121,16 +182,27 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent
     eventType.eventClass = kEventClassKeyboard;
     eventType.eventKind = kEventHotKeyPressed;
     
-    InstallApplicationEventHandler(&hotKeyHandler, 1, &eventType, (__bridge void *)self, NULL);
+    /* Install SYSTEM-WIDE event handler, not just for this app */
+    InstallEventHandler(GetEventDispatcherTarget(), &hotKeyHandler, 1, &eventType, (__bridge void *)self, NULL);
     
     EventHotKeyID hotKeyID;
     hotKeyID.signature = 'htk1';
     hotKeyID.id = 1;
     
-    /* Command+Option+Shift+/ */
-    RegisterEventHotKey(kVK_ANSI_Slash,
-                       cmdKey | optionKey | shiftKey,
-                       hotKeyID, GetApplicationEventTarget(), 0, &_hotKeyRef);
+    /* Command+Option+Shift+/ - system-wide registration */
+    OSStatus status = RegisterEventHotKey(kVK_ANSI_Slash,
+                                         cmdKey | optionKey | shiftKey,
+                                         hotKeyID, GetEventDispatcherTarget(), 0, &_hotKeyRef);
+    
+    if (status != noErr) {
+        NSLog(@"Failed to register global hotkey: %d", (int)status);
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:@"Hotkey Registration Failed"];
+        [alert setInformativeText:@"Could not register global hotkey. The app may not respond when other apps are focused."];
+        [alert runModal];
+    } else {
+        NSLog(@"Successfully registered global hotkey");
+    }
 }
 
 - (void)setupStatusItem {
@@ -158,6 +230,29 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent
     
     [menu addItem:[NSMenuItem separatorItem]];
     
+    /* Size options */
+    NSMenuItem *size50Item = [[NSMenuItem alloc] initWithTitle:@"Size: 50%" action:@selector(setSize50:) keyEquivalent:@""];
+    [size50Item setTarget:self];
+    [size50Item setState:(_config.scale == 0.5f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:size50Item];
+    
+    NSMenuItem *size75Item = [[NSMenuItem alloc] initWithTitle:@"Size: 75%" action:@selector(setSize75:) keyEquivalent:@""];
+    [size75Item setTarget:self];
+    [size75Item setState:(_config.scale == 0.75f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:size75Item];
+    
+    NSMenuItem *size100Item = [[NSMenuItem alloc] initWithTitle:@"Size: 100%" action:@selector(setSize100:) keyEquivalent:@""];
+    [size100Item setTarget:self];
+    [size100Item setState:(_config.scale == 1.0f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:size100Item];
+    
+    NSMenuItem *size150Item = [[NSMenuItem alloc] initWithTitle:@"Size: 150%" action:@selector(setSize150:) keyEquivalent:@""];
+    [size150Item setTarget:self];
+    [size150Item setState:(_config.scale == 1.5f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:size150Item];
+    
+    [menu addItem:[NSMenuItem separatorItem]];
+    
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" 
                                                       action:@selector(quit:) 
                                                keyEquivalent:@""];
@@ -174,12 +269,13 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent
     NSRect screenFrame = [screen visibleFrame];
     NSRect panelFrame = [_panel frame];
     
-    /* Center horizontally, bottom of screen */
-    panelFrame.origin.x = NSMidX(screenFrame) - NSWidth(panelFrame) / 2.0;
-    panelFrame.origin.y = NSMinY(screenFrame) + 100; /* 100px from bottom */
+    /* Apply configurable positioning */
+    panelFrame.origin.x = NSMidX(screenFrame) - NSWidth(panelFrame) / 2.0 + _config.position_x;
+    panelFrame.origin.y = NSMinY(screenFrame) + _config.position_y;
     
     [_panel setFrame:panelFrame display:NO];
-    [_panel orderFront:nil];
+    /* Order front regardless of app activation so the overlay is visible when app is backgrounded */
+    [_panel orderFrontRegardless];
     _visible = YES;
 }
 
@@ -211,6 +307,36 @@ static OSStatus hotKeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent
     [sender setState:_config.invert ? NSControlStateValueOn : NSControlStateValueOff];
     
     [self updateOverlayImage];
+}
+
+- (void)setSize50:(id)sender {
+    [self setSizeScale:0.5f sender:sender];
+}
+
+- (void)setSize75:(id)sender {
+    [self setSizeScale:0.75f sender:sender];
+}
+
+- (void)setSize100:(id)sender {
+    [self setSizeScale:1.0f sender:sender];
+}
+
+- (void)setSize150:(id)sender {
+    [self setSizeScale:1.5f sender:sender];
+}
+
+- (void)setSizeScale:(float)scale sender:(id)sender {
+    _config.scale = scale;
+    
+    /* Reload overlay with new scale */
+    free_overlay(&_overlay);
+    [self loadOverlay];
+    [self createOverlayWindow];
+    
+    /* Update menu checkmarks */
+    _statusItem.menu = [self buildMenu];
+    
+    NSLog(@"Changed scale to %.0f%%", scale * 100);
 }
 
 - (void)quit:(id)sender {

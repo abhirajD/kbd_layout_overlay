@@ -1,8 +1,10 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <stdio.h>
-#include "../shared/config.h"
-#include "../shared/overlay.h"
+#include <string.h>
+#include <stdlib.h>
+#include "config.h"
+#include "overlay.h"
 
 #define WM_TRAY (WM_APP + 1)
 #define HOTKEY_ID 1
@@ -33,19 +35,75 @@ static void parse_hotkey(const char *hotkey_str, UINT *modifiers, UINT *vk) {
     if (strstr(hotkey_str, "Shift")) *modifiers |= MOD_SHIFT;
     if (strstr(hotkey_str, "Win")) *modifiers |= MOD_WIN;
     
+    /* Support more keys */
     if (strstr(hotkey_str, "Slash")) *vk = VK_OEM_2;
+    else if (strstr(hotkey_str, "F1")) *vk = VK_F1;
+    else if (strstr(hotkey_str, "F2")) *vk = VK_F2;
+    else if (strstr(hotkey_str, "F3")) *vk = VK_F3;
+    else if (strstr(hotkey_str, "F4")) *vk = VK_F4;
+    else if (strstr(hotkey_str, "F5")) *vk = VK_F5;
+    else if (strstr(hotkey_str, "F6")) *vk = VK_F6;
+    else if (strstr(hotkey_str, "F7")) *vk = VK_F7;
+    else if (strstr(hotkey_str, "F8")) *vk = VK_F8;
+    else if (strstr(hotkey_str, "F9")) *vk = VK_F9;
+    else if (strstr(hotkey_str, "F10")) *vk = VK_F10;
+    else if (strstr(hotkey_str, "F11")) *vk = VK_F11;
+    else if (strstr(hotkey_str, "F12")) *vk = VK_F12;
+    else if (strstr(hotkey_str, "Space")) *vk = VK_SPACE;
+    else if (strstr(hotkey_str, "Enter")) *vk = VK_RETURN;
+    else if (strstr(hotkey_str, "Escape")) *vk = VK_ESCAPE;
 }
 
 static int init_overlay(void) {
-    /* Try to load keymap.png first */
-    if (load_overlay("keymap.png", 1920, 1080, &g_overlay) != 0) {
-        /* Fallback to embedded default */
+    /* Apply configurable scaling to max dimensions */
+    int max_w = (int)(1920 * g_config.scale);
+    int max_h = (int)(1080 * g_config.scale);
+    
+    /* Try multiple locations for keymap.png */
+    const char *search_paths[] = {
+        "keymap.png",           // Current directory
+        "assets\\keymap.png",   // Assets folder
+        "..\\assets\\keymap.png", // Assets folder (relative)
+        NULL
+    };
+    
+    OverlayError result = OVERLAY_ERROR_FILE_NOT_FOUND;
+    for (int i = 0; search_paths[i] != NULL; i++) {
+        result = load_overlay(search_paths[i], max_w, max_h, &g_overlay);
+        if (result == OVERLAY_OK) {
+            break;
+        }
+    }
+    
+    if (result != OVERLAY_OK) {
+        /* Try embedded fallback */
         int size;
         const unsigned char *data = get_default_keymap(&size);
-        if (load_overlay_mem(data, size, 1920, 1080, &g_overlay) != 0) {
-            MessageBoxA(NULL, "Failed to load overlay image", "Error", MB_OK);
-            return 0;
+        if (data && size > 0) {
+            result = load_overlay_mem(data, size, max_w, max_h, &g_overlay);
         }
+    }
+    
+    if (result != OVERLAY_OK) {
+        const char *error_msg = "Unknown error";
+        switch (result) {
+            case OVERLAY_ERROR_FILE_NOT_FOUND:
+                error_msg = "Could not find keymap.png in any location"; break;
+            case OVERLAY_ERROR_DECODE_FAILED:
+                error_msg = "Could not decode image file"; break;
+            case OVERLAY_ERROR_OUT_OF_MEMORY:
+                error_msg = "Out of memory loading image"; break;
+            case OVERLAY_ERROR_RESIZE_FAILED:
+                error_msg = "Failed to resize image"; break;
+        }
+        
+        char full_msg[512];
+        snprintf(full_msg, sizeof(full_msg),
+            "%s\n\nPlease place keymap.png in one of these locations:\n"
+            "• assets\\ folder (before building)\n"
+            "• Same directory as exe", error_msg);
+        MessageBoxA(NULL, full_msg, "Error", MB_OK);
+        return 0;
     }
     
     /* Apply effects */
@@ -85,11 +143,11 @@ static void show_overlay(void) {
     
     SelectObject(g_mem_dc, g_bitmap);
     
-    /* Center on primary monitor */
+    /* Apply configurable positioning */
     int screen_w = GetSystemMetrics(SM_CXSCREEN);
     int screen_h = GetSystemMetrics(SM_CYSCREEN);
-    int x = (screen_w - g_overlay.width) / 2;
-    int y = screen_h - g_overlay.height - 100; /* 100px from bottom */
+    int x = (screen_w - g_overlay.width) / 2 + g_config.position_x;
+    int y = screen_h - g_overlay.height - g_config.position_y;
     
     SetWindowPos(g_window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     
@@ -115,10 +173,28 @@ static void toggle_overlay(void) {
     else show_overlay();
 }
 
+static void reload_overlay_with_scale(void) {
+    BOOL was_visible = g_visible;
+    if (was_visible) hide_overlay();
+    
+    /* Clean up current resources */
+    cleanup_resources();
+    
+    /* Reinitialize with new scale */
+    if (init_overlay() && create_bitmap()) {
+        if (was_visible) show_overlay();
+    }
+}
+
 static void show_tray_menu(void) {
     HMENU menu = CreatePopupMenu();
     AppendMenuA(menu, MF_STRING | (g_config.persistent ? MF_CHECKED : 0), 1, "Persistent mode");
     AppendMenuA(menu, MF_STRING | (g_config.invert ? MF_CHECKED : 0), 2, "Invert colors");
+    AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(menu, MF_STRING | (g_config.scale == 0.5f ? MF_CHECKED : 0), 4, "Size: 50%");
+    AppendMenuA(menu, MF_STRING | (g_config.scale == 0.75f ? MF_CHECKED : 0), 5, "Size: 75%");
+    AppendMenuA(menu, MF_STRING | (g_config.scale == 1.0f ? MF_CHECKED : 0), 6, "Size: 100%");
+    AppendMenuA(menu, MF_STRING | (g_config.scale == 1.5f ? MF_CHECKED : 0), 7, "Size: 150%");
     AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuA(menu, MF_STRING, 3, "Quit");
     
@@ -153,6 +229,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         case 3: /* Quit */
             PostQuitMessage(0);
+            break;
+        case 4: /* Size 50% */
+            g_config.scale = 0.5f;
+            reload_overlay_with_scale();
+            break;
+        case 5: /* Size 75% */
+            g_config.scale = 0.75f;
+            reload_overlay_with_scale();
+            break;
+        case 6: /* Size 100% */
+            g_config.scale = 1.0f;
+            reload_overlay_with_scale();
+            break;
+        case 7: /* Size 150% */
+            g_config.scale = 1.5f;
+            reload_overlay_with_scale();
             break;
         }
         break;
@@ -201,7 +293,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     /* Register hotkey */
     UINT modifiers, vk;
     parse_hotkey(g_config.hotkey, &modifiers, &vk);
-    RegisterHotKey(g_hidden_window, HOTKEY_ID, modifiers, vk);
+    if (!RegisterHotKey(g_hidden_window, HOTKEY_ID, modifiers, vk)) {
+        DWORD error = GetLastError();
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), 
+            "Failed to register global hotkey '%s' (Error: %lu)\n\n"
+            "The hotkey may already be in use by another application.",
+            g_config.hotkey, error);
+        MessageBoxA(NULL, error_msg, "Hotkey Registration Failed", MB_OK | MB_ICONWARNING);
+    }
     
     /* Create tray icon */
     NOTIFYICONDATAA nid = {0};
