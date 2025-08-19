@@ -1,2 +1,39 @@
-target/
-**/*.rs.bk
+# Build directories
+/build/
+**/build/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+install_manifest.txt
+
+# Compiled outputs
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.app
+*.dSYM/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.iml
+*~
+*.swp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temp/log files
+*.log
+*.tmp
+*.cache

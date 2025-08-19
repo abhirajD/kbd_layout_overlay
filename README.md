@@ -1,78 +1,57 @@
-# kbd_layout_overlay
+# Keyboard Layout Overlay
 
-A lightweight utility that displays an image overlay in response to a global hotkey. Native implementations are provided for macOS and Windows.
+A lightweight utility that shows a keyboard overlay when you press a hotkey. Simple, fast, no bullshit.
+
+## Features
+
+- **Single hotkey:** Show/hide overlay with Cmd+Option+Shift+/ (macOS) or Ctrl+Alt+Shift+/ (Windows)
+- **System tray:** Right-click for options
+- **Minimal UI:** Persistent mode toggle, color invert, quit
+- **Auto-fallback:** Uses built-in overlay if keymap.png not found
+- **Cross-platform:** Works on macOS and Windows
 
 ## Installation
 
-### Windows
-1. Download `kbd_layout_overlay.exe` from the releases page or build it from source (see [Contributor Guide](#contributor-guide)).
-2. Place the executable and an optional `keymap.png` in a directory of your choice.
-3. Run the executable once; a `config.cfg` file is created next to it.
-
 ### macOS
-1. Download `Kbd Layout Overlay.app` from the releases page or build it from source.
-2. Move the app to `Applications` and launch it.
-3. A configuration file is written to `~/Library/Preferences/kbd_layout_overlay.cfg`.
+1. Build with `cmake . && make`
+2. Run `KbdLayoutOverlay.app`
+3. Look for "KLO" in menu bar
+4. Press Cmd+Option+Shift+/ to show overlay
 
-## Configuration
+### Windows  
+1. Build with `cmake . && cmake --build . --config Release`
+2. Run `kbd_layout_overlay.exe`
+3. Look for tray icon
+4. Press Ctrl+Alt+Shift+/ to show overlay
 
-Settings are stored in a simple `key=value` file.
+## Building
 
-| option        | description |
-|---------------|-------------|
-| `overlay_path`| Path to a custom image. If empty, the program looks for a `keymap.png` next to the executable and falls back to a bundled default if none is found. |
-| `opacity`     | Overlay opacity from `0.0`–`1.0`. |
-| `invert`      | `1` inverts colors, `0` leaves them unchanged. |
-| `autostart`   | `1` launches the app at login, `0` disables autostart. |
-| `hotkey`      | `+` separated list of modifiers and key, e.g. `Ctrl+Alt+K` or `Command+Option+K`. |
-| `persistent`  | `1` toggles the overlay, `0` shows it only while keys are held. |
-| `monitor`     | `0` auto-detects active monitor, `1` primary monitor, `2` secondary, etc. |
-| `log`         | Logging level: `error`, `warn`, `info`, `debug`, or `trace`. |
-
-Edit the file with any text editor:
-
-- **Windows:** `config.cfg` in the same directory as `kbd_layout_overlay.exe`.
-- **macOS:** `~/Library/Preferences/kbd_layout_overlay.cfg`.
-
-### Replacing the overlay image
-
-A default `keymap.png` is embedded in the application. To use a different layout, set `overlay_path` to another image or place a file named `keymap.png` next to the executable (`kbd_layout_overlay.exe` on Windows, `Kbd Layout Overlay.app/Contents/MacOS/` on macOS). The external image takes precedence over the bundled one. Images are automatically scaled to fit the screen.
-
-## Autostart and Hotkeys
-
-The overlay appears when the configured shortcut is pressed.
-
-- **Default hotkeys:** `Ctrl+Alt+Shift+Slash` on Windows, `Cmd+Option+Shift+/` on macOS.
-- Change the shortcut by editing the `hotkey` entry in the configuration file.
-- Enable persistent mode with `persistent=1`.
-
-To start the application at login, set `autostart=1` in the configuration file or run:
-
-```
-kbd_layout_overlay autostart enable   # register
-kbd_layout_overlay autostart disable  # unregister
+```bash
+mkdir build && cd build
+cmake ..
+make                    # macOS/Linux
+# or
+cmake --build .         # Windows
 ```
 
-Use `--log-level <level>` (alias `--logs`) or set `log=<level>` in the configuration file to adjust verbosity for troubleshooting.
+## Customization
 
-On Windows this creates or removes a registry entry under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. On macOS a `LaunchAgents` plist is created or deleted.
+Drop a `keymap.png` file next to the executable to use your own keyboard layout.
 
-## Contributor Guide
+## Architecture
 
-### Repository layout
+**Clean and simple:**
+- `shared/` - Core overlay loading (105 lines)
+- `windows/` - Win32 implementation (229 lines)  
+- `macos/` - Cocoa implementation (234 lines)
+- **Total:** ~570 lines of actual code
 
-```
-shared/   - platform-neutral C sources and assets
-windows/  - Win32 implementation and build script
-macos/    - Cocoa implementation and build script
-legacy/   - historical Rust version (unmaintained)
-```
+**What we removed:**
+- Config file parsing (just use hardcoded defaults)
+- Multi-monitor support (primary only)
+- Autostart registration
+- Async caching and threading
+- Elaborate error handling
+- Platform abstraction layers
 
-### Building
-
-```
-windows\build_windows.bat  # compile Windows executable (Visual Studio Developer Command Prompt)
-./macos/build_macos.sh     # build macOS app bundle
-```
-
-Pass `--install` to the macOS build script to install the LaunchAgent for autostart.
+This proves you don't need 2000+ lines of "enterprise" code for a simple overlay app.
