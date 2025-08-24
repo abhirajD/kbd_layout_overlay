@@ -132,6 +132,25 @@ void apply_effects(Overlay *img, float opacity, int invert) {
     img->cached_invert = invert;
 }
 
+/* Non-destructive apply: copy src pixels into dst buffer and apply effects there.
+   dst must be preallocated to src->width * src->height * src->channels (4).
+   Returns 1 on success, 0 on failure (e.g., null params). */
+int apply_effects_copy(const Overlay *src, unsigned char *dst, float opacity, int invert) {
+    if (!src || !src->data || !dst) return 0;
+    size_t total = (size_t)src->width * src->height * 4;
+    memcpy(dst, src->data, total);
+    Overlay tmp;
+    tmp.data = dst;
+    tmp.width = src->width;
+    tmp.height = src->height;
+    tmp.channels = src->channels;
+    tmp.cached_effects = 0;
+    tmp.cached_opacity = 0.0f;
+    tmp.cached_invert = 0;
+    apply_effects(&tmp, opacity, invert);
+    return 1;
+}
+
 void free_overlay(Overlay *img) {
     if (img && img->data) {
         overlay_free(img->data);

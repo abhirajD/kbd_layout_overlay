@@ -24,18 +24,18 @@ jobs:
 
       - name: Configure (macOS)
         if: matrix.os == 'macos-latest'
-        run: cmake -S . -B build
+        run: cmake -S . -B build -DENABLE_CODESIGN=OFF
 
       - name: Build
         run: cmake --build build --config Release
 
       - name: Run tests (macOS)
         if: matrix.os == 'macos-latest'
-        run: ./build/test_mvp
+        run: ./build/test_mvp && ./build/test_overlay_copy
 
       - name: Run tests (Windows)
         if: matrix.os == 'windows-latest'
-        run: build\\Release\\test_mvp.exe
+        run: build\\Release\\test_mvp.exe && build\\Release\\test_overlay_copy.exe
 
       - name: Upload Windows executable
         if: matrix.os == 'windows-latest'

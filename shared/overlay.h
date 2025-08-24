@@ -44,6 +44,11 @@ OverlayError load_overlay_mem(const unsigned char *buffer, int len, int max_widt
 /* Apply opacity and inversion effects */
 void apply_effects(Overlay *img, float opacity, int invert);
 
+/* Non-destructive apply: copy src pixels into dst buffer and apply effects there.
+   dst must be preallocated to src->width * src->height * src->channels (4).
+   Returns 1 on success, 0 on failure (e.g., null params). */
+int apply_effects_copy(const Overlay *src, unsigned char *dst, float opacity, int invert);
+
 /* Free overlay resources */
 void free_overlay(Overlay *img);
 
