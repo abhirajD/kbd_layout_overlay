@@ -34,7 +34,12 @@ void logger_init(void) {
     if (g_log_file) {
         time_t t = time(NULL);
         struct tm ltbuf;
-        struct tm *lt = localtime_r(&t, &ltbuf);
+        struct tm *lt = NULL;
+#ifdef _WIN32
+        if (localtime_s(&ltbuf, &t) == 0) lt = &ltbuf;
+#else
+        lt = localtime_r(&t, &ltbuf);
+#endif
         if (lt) {
             fprintf(g_log_file, "---- Logger started: %04d-%02d-%02d %02d:%02d:%02d ----\n",
                     lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday,
@@ -56,7 +61,12 @@ void logger_log(const char *fmt, ...) {
     if (!g_log_file) return;
     time_t t = time(NULL);
     struct tm ltbuf;
-    struct tm *lt = localtime_r(&t, &ltbuf);
+    struct tm *lt = NULL;
+#ifdef _WIN32
+    if (localtime_s(&ltbuf, &t) == 0) lt = &ltbuf;
+#else
+    lt = localtime_r(&t, &ltbuf);
+#endif
     if (lt) {
         fprintf(g_log_file, "[%04d-%02d-%02d %02d:%02d:%02d] ",
                 lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday,
