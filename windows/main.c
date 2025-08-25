@@ -291,13 +291,20 @@ static int init_overlay(void) {
         return 0;
     }
 
+    /* Determine overlay dimensions */
     int max_w, max_h;
+    /* Get active monitor dimensions */
+    RECT mon = get_monitor_rect(g_config.monitor_index);
+    int screen_w = mon.right - mon.left;
+    int screen_h = mon.bottom - mon.top;
     if (g_config.use_custom_size) {
+        /* Use custom pixel dimensions */
         max_w = g_config.custom_width_px;
         max_h = g_config.custom_height_px;
     } else {
-        max_w = (int)(1920 * g_config.scale);
-        max_h = (int)(1080 * g_config.scale);
+        /* Apply configurable scaling to monitor dimensions */
+        max_w = (int)(screen_w * g_config.scale);
+        max_h = (int)(screen_h * g_config.scale);
     }
 
     OverlayError result = load_overlay_mem(g_original_image, g_original_image_size,
