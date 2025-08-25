@@ -561,19 +561,38 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 /* Update hook mapping immediately (safe: parsing already succeeded) */
                 g_hook_modifiers = modifiers;
                 g_hook_vk = vk;
-                
+
+                /* Read custom size settings */
+                BOOL use_custom = (SendMessage(g_prefs_custom_size_check, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                g_config.use_custom_size = use_custom ? 1 : 0;
+                if (use_custom) {
+                    char wbuf[32], hbuf[32];
+                    GetWindowTextA(g_prefs_custom_width_edit, wbuf, sizeof(wbuf));
+                    GetWindowTextA(g_prefs_custom_height_edit, hbuf, sizeof(hbuf));
+                    int w = atoi(wbuf);
+                    int h = atoi(hbuf);
+                    if (w > 0) g_config.custom_width_px = w;
+                    if (h > 0) g_config.custom_height_px = h;
+                }
+
                 /* Sliders have already updated g_config values in real-time */
                 /* Just persist the configuration */
                 save_config(&g_config, NULL);
-                
+
                 /* Ensure final state is applied */
                 if (g_visible) {
                     apply_effects(&g_overlay, g_config.opacity, g_config.invert);
                 }
                 reload_overlay_if_needed();
-                
+
                 DestroyWindow(hwnd);
                 g_prefs_window = NULL;
+                return 0;
+            }
+            case IDC_USE_CUSTOM_SIZE: {
+                BOOL enabled = (SendMessage(g_prefs_custom_size_check, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                EnableWindow(g_prefs_custom_width_edit, enabled);
+                EnableWindow(g_prefs_custom_height_edit, enabled);
                 return 0;
             }
             case IDC_PREFS_CANCEL:
@@ -635,7 +654,7 @@ static void open_prefs_window(void) {
     wc.hbrBackground = (HBRUSH)(COLOR_3DFACE + 1);
     RegisterClassA(&wc);
 
-    int w = 380, h = 380;
+    int w = 380, h = 480;
     int sx = GetSystemMetrics(SM_CXSCREEN);
     int sy = GetSystemMetrics(SM_CYSCREEN);
     int x = (sx - w) / 2;
@@ -714,6 +733,42 @@ static void open_prefs_window(void) {
     SendMessage(g_autohide_slider, TBM_SETPOS, TRUE, autohide_pos);
     
     yPos += 80;
+
+    /* Custom Size Group */
+    CreateWindowExA(WS_EX_DLGMODALFRAME, "BUTTON", "Custom Size",
+                    WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                    15, yPos, 340, 80, g_prefs_window, NULL, hInst, NULL);
+
+    g_prefs_custom_size_check = CreateWindowExA(0, "BUTTON", "Use custom size",
+                    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                    25, yPos + 20, 150, 20, g_prefs_window,
+                    (HMENU)IDC_USE_CUSTOM_SIZE, hInst, NULL);
+
+    CreateWindowExA(0, "STATIC", "Width:", WS_CHILD | WS_VISIBLE,
+                    40, yPos + 45, 40, 20, g_prefs_window, NULL, hInst, NULL);
+    g_prefs_custom_width_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                    WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
+                    85, yPos + 43, 60, 22, g_prefs_window,
+                    (HMENU)IDC_CUSTOM_WIDTH, hInst, NULL);
+
+    CreateWindowExA(0, "STATIC", "Height:", WS_CHILD | WS_VISIBLE,
+                    170, yPos + 45, 45, 20, g_prefs_window, NULL, hInst, NULL);
+    g_prefs_custom_height_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+                    WS_CHILD | WS_VISIBLE | ES_NUMBER | ES_AUTOHSCROLL,
+                    220, yPos + 43, 60, 22, g_prefs_window,
+                    (HMENU)IDC_CUSTOM_HEIGHT, hInst, NULL);
+
+    SendMessage(g_prefs_custom_size_check, BM_SETCHECK,
+                g_config.use_custom_size ? BST_CHECKED : BST_UNCHECKED, 0);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", g_config.custom_width_px);
+    SetWindowTextA(g_prefs_custom_width_edit, buf);
+    snprintf(buf, sizeof(buf), "%d", g_config.custom_height_px);
+    SetWindowTextA(g_prefs_custom_height_edit, buf);
+    EnableWindow(g_prefs_custom_width_edit, g_config.use_custom_size);
+    EnableWindow(g_prefs_custom_height_edit, g_config.use_custom_size);
+
+    yPos += 100;
 
     /* Update all labels with current values */
     update_scale_label();
