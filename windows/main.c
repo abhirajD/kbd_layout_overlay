@@ -16,6 +16,7 @@ static int g_key_pressed = 0;
 #define HOTKEY_ID 1
 
 static Config g_config;
+static Config g_prefs_backup;
 static Overlay g_overlay;
 static HWND g_window = NULL;
 static HWND g_hidden_window = NULL;
@@ -69,6 +70,9 @@ static HWND g_autohide_label = NULL;
 static void update_scale_label(void);
 static void update_opacity_label(void);
 static void update_autohide_label(void);
+static void apply_window_style(void);
+static void apply_start_at_login(void);
+static void get_overlay_pos(int *x, int *y);
 
 static void cleanup_resources(void) {
     if (g_bitmap) DeleteObject(g_bitmap);
@@ -85,6 +89,65 @@ static RECT get_virtual_desktop(void) {
     r.right  = r.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
     r.bottom = r.top  + GetSystemMetrics(SM_CYVIRTUALSCREEN);
     return r;
+}
+
+static void get_overlay_pos(int *x, int *y) {
+    RECT vdesktop = get_virtual_desktop();
+    int screen_w = vdesktop.right - vdesktop.left;
+    int screen_h = vdesktop.bottom - vdesktop.top;
+    int pos_x = vdesktop.left;
+    int pos_y = vdesktop.top;
+    switch (g_config.position_mode) {
+    case 0: /* Center */
+        pos_x += (screen_w - g_overlay.width) / 2 + g_config.position_x;
+        pos_y += (screen_h - g_overlay.height) / 2 + g_config.position_y;
+        break;
+    case 1: /* Top-Center */
+        pos_x += (screen_w - g_overlay.width) / 2 + g_config.position_x;
+        pos_y += g_config.position_y;
+        break;
+    case 3: /* Custom */
+        pos_x += g_config.position_x;
+        pos_y += g_config.position_y;
+        break;
+    case 2: /* Bottom-Center */
+    default:
+        pos_x += (screen_w - g_overlay.width) / 2 + g_config.position_x;
+        pos_y += screen_h - g_overlay.height - g_config.position_y;
+        break;
+    }
+    if (x) *x = pos_x;
+    if (y) *y = pos_y;
+}
+
+static void apply_window_style(void) {
+    if (!g_window) return;
+    LONG ex = GetWindowLong(g_window, GWL_EXSTYLE);
+    if (g_config.click_through)
+        ex |= WS_EX_TRANSPARENT;
+    else
+        ex &= ~WS_EX_TRANSPARENT;
+    SetWindowLong(g_window, GWL_EXSTYLE, ex);
+    SetWindowPos(g_window,
+                 g_config.always_on_top ? HWND_TOPMOST : HWND_TOP,
+                 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
+static void apply_start_at_login(void) {
+    HKEY key;
+    const char *runKey = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, runKey, 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        if (g_config.start_at_login) {
+            char path[MAX_PATH];
+            GetModuleFileNameA(NULL, path, MAX_PATH);
+            RegSetValueExA(key, "KbdLayoutOverlay", 0, REG_SZ,
+                           (const BYTE*)path, (DWORD)(strlen(path) + 1));
+        } else {
+            RegDeleteValueA(key, "KbdLayoutOverlay");
+        }
+        RegCloseKey(key);
+    }
 }
 
 static int parse_hotkey(const char *hotkey_str, UINT *modifiers, UINT *vk) {
@@ -261,8 +324,8 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                         if (g_key_pressed) {
                             g_key_pressed = 0;
                             logger_log("Hotkey released (vk=%u)", (unsigned)pk->vkCode);
-                            /* In non-persistent mode, hide on release; persistent mode ignores release */
-                            if (!g_config.persistent) {
+                            /* Hide on release if auto-hide is enabled */
+                            if (g_config.auto_hide > 0.0f) {
                                 PostMessage(g_hidden_window, MSG_HIDE_OVERLAY, 0, 0);
                             }
                         }
@@ -272,7 +335,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                     if (g_key_pressed) {
                         g_key_pressed = 0;
                         logger_log("Hotkey modifiers changed - hiding overlay");
-                        if (!g_config.persistent) {
+                        if (g_config.auto_hide > 0.0f) {
                             PostMessage(g_hidden_window, MSG_HIDE_OVERLAY, 0, 0);
                         }
                     }
@@ -285,32 +348,28 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
 
 static void show_overlay(void) {
     if (!g_window || g_visible) return;
-    
+
     SelectObject(g_mem_dc, g_bitmap);
-    
-    /* Use virtual desktop bounds for multi-monitor support */
-    RECT vdesktop = get_virtual_desktop();
-    int screen_w = vdesktop.right - vdesktop.left;
-    int screen_h = vdesktop.bottom - vdesktop.top;
-    
-    /* Center overlay on virtual desktop */
-    int x = vdesktop.left + (screen_w - g_overlay.width) / 2 + g_config.position_x;
-    int y = vdesktop.top + screen_h - g_overlay.height - g_config.position_y;
-    
-    SetWindowPos(g_window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-    
+
+    int x, y;
+    get_overlay_pos(&x, &y);
+
+    SetWindowPos(g_window,
+                 g_config.always_on_top ? HWND_TOPMOST : HWND_TOP,
+                 x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+
     SIZE size = {g_overlay.width, g_overlay.height};
     POINT src = {0, 0};
     POINT dst = {x, y};
     BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    
+
     UpdateLayeredWindow(g_window, g_screen_dc, &dst, &size, g_mem_dc, &src, 0, &bf, ULW_ALPHA);
     ShowWindow(g_window, SW_SHOWNOACTIVATE);
     g_visible = 1;
-    
-    /* Auto-hide timer for non-persistent mode (matching macOS behavior) */
-    if (!g_config.persistent) {
-        SetTimer(g_hidden_window, 1, 800, NULL);  // 0.8 seconds like macOS
+
+    if (g_config.auto_hide > 0.0f) {
+        UINT interval = (UINT)(g_config.auto_hide * 1000.0f);
+        SetTimer(g_hidden_window, 1, interval, NULL);
     }
 }
 
@@ -448,21 +507,24 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 /* Sliders have already updated g_config values in real-time */
                 /* Just persist the configuration */
                 save_config(&g_config, NULL);
-                
+
                 /* Ensure final state is applied */
                 if (g_visible) {
                     apply_effects(&g_overlay, g_config.opacity, g_config.invert);
                 }
                 reload_overlay_with_scale();
-                
+                apply_window_style();
+                apply_start_at_login();
+
                 DestroyWindow(hwnd);
                 g_prefs_window = NULL;
                 return 0;
             }
             case IDC_PREFS_CANCEL:
-                /* Cancel pressed - restore original values */
-                /* Note: For full implementation, we should save original values when window opens
-                   and restore them here. For now, just close the window. */
+                g_config = g_prefs_backup;
+                reload_overlay_with_scale();
+                apply_window_style();
+                apply_start_at_login();
                 DestroyWindow(hwnd);
                 g_prefs_window = NULL;
                 return 0;
@@ -470,6 +532,10 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         }
         break;
     case WM_CLOSE:
+        g_config = g_prefs_backup;
+        reload_overlay_with_scale();
+        apply_window_style();
+        apply_start_at_login();
         DestroyWindow(hwnd);
         g_prefs_window = NULL;
         return 0;
@@ -508,6 +574,8 @@ static void open_prefs_window(void) {
         SetForegroundWindow(g_prefs_window);
         return;
     }
+
+    g_prefs_backup = g_config;
 
     HINSTANCE hInst = GetModuleHandle(NULL);
     const char *cls = "KLO_Prefs_Class";
@@ -734,6 +802,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             /* Open preferences for custom auto-hide setting */
             open_prefs_window();
             break;
+        case ID_PREFS_OPEN:
+            open_prefs_window();
+            break;
         case 3: /* Quit */
             PostQuitMessage(0);
             break;
@@ -769,6 +840,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     g_config = get_default_config();
     /* Load persisted config if present (overrides defaults) */
     load_config(&g_config, NULL);
+    apply_start_at_login();
 
     /* Initialize logger early for parity with macOS */
     logger_init();
@@ -794,10 +866,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     
     /* Create overlay window spanning virtual desktop */
     RECT vdesktop = get_virtual_desktop();
-    g_window = CreateWindowExA(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+    DWORD exStyle = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    if (g_config.click_through) exStyle |= WS_EX_TRANSPARENT;
+    if (g_config.always_on_top) exStyle |= WS_EX_TOPMOST;
+    g_window = CreateWindowExA(exStyle,
                                "KbdLayoutOverlay", "", WS_POPUP,
-                               vdesktop.left, vdesktop.top, 
-                               vdesktop.right - vdesktop.left, 
+                               vdesktop.left, vdesktop.top,
+                               vdesktop.right - vdesktop.left,
                                vdesktop.bottom - vdesktop.top,
                                NULL, NULL, hInst, NULL);
     
@@ -805,6 +880,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
         cleanup_resources();
         return 1;
     }
+    apply_window_style();
     
     /* Register global low-level keyboard hook for press+release detection */
     {
