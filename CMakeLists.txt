@@ -43,6 +43,10 @@ if(EMBED_KEYMAP)
     target_compile_definitions(overlay_lib PRIVATE EMBED_KEYMAP=1)
 endif()
 
+if(UNIX)
+    target_link_libraries(overlay_lib PUBLIC m)
+endif()
+
 # Windows executable
 if(WIN32)
     add_executable(kbd_layout_overlay WIN32
@@ -97,7 +101,12 @@ add_executable(test_overlay_copy tests/test_overlay_copy.c)
 target_link_libraries(test_overlay_copy PRIVATE overlay_lib)
 target_include_directories(test_overlay_copy PRIVATE shared)
 
+add_executable(test_overlay_scale tests/test_overlay_scale.c)
+target_link_libraries(test_overlay_scale PRIVATE overlay_lib)
+target_include_directories(test_overlay_scale PRIVATE shared)
+
 if(UNIX AND NOT APPLE)
     target_link_libraries(test_mvp PRIVATE pthread)
     target_link_libraries(test_overlay_copy PRIVATE pthread)
+    target_link_libraries(test_overlay_scale PRIVATE pthread)
 endif()

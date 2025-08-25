@@ -54,9 +54,9 @@ static OverlayError finalize_image(unsigned char *data, int width, int height,
     float scale_h = (float)max_height / (float)height;
     float scale = (scale_w < scale_h) ? scale_w : scale_h;
 
-    if (scale < 1.0f) {
-        int new_w = (int)(width * scale);
-        int new_h = (int)(height * scale);
+    if (scale != 1.0f) {
+        int new_w = (int)roundf(width * scale);
+        int new_h = (int)roundf(height * scale);
         if (new_w < 1) new_w = 1;
         if (new_h < 1) new_h = 1;
 
