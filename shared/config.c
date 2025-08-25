@@ -145,7 +145,6 @@ int load_config(Config *out, const char *path) {
     int any = 0;
     if (parse_float_field(buf, "\"opacity\"", &out->opacity)) any = 1;
     if (parse_int_field(buf, "\"invert\"", &out->invert)) any = 1;
-    if (parse_int_field(buf, "\"persistent\"", &out->persistent)) any = 1;
     float scale_tmp;
     if (parse_float_field(buf, "\"scale\"", &scale_tmp)) { out->scale = scale_tmp; any = 1; }
 
@@ -160,16 +159,18 @@ int load_config(Config *out, const char *path) {
 
     /* New fields: auto_hide and positioning / general flags */
     if (parse_float_field(buf, "\"auto_hide\"", &out->auto_hide)) any = 1;
+    int legacy_persistent = 0;
+    if (parse_int_field(buf, "\"persistent\"", &legacy_persistent)) {
+        any = 1;
+        if (legacy_persistent == 1) {
+            out->auto_hide = 0.0f;
+        }
+    }
     if (parse_int_field(buf, "\"position_mode\"", &out->position_mode)) any = 1;
     if (parse_int_field(buf, "\"start_at_login\"", &out->start_at_login)) any = 1;
     if (parse_int_field(buf, "\"click_through\"", &out->click_through)) any = 1;
     if (parse_int_field(buf, "\"always_on_top\"", &out->always_on_top)) any = 1;
     if (parse_int_field(buf, "\"monitor_index\"", &out->monitor_index)) any = 1;
-
-    /* Migration: legacy persistent flag maps to auto_hide == 0.0 (persistent) */
-    if (out->persistent == 1) {
-        out->auto_hide = 0.0f;
-    }
 
     /* Clamp sensible ranges */
     if (out->auto_hide < 0.0f) out->auto_hide = 0.0f;
@@ -195,7 +196,6 @@ int save_config(const Config *cfg, const char *path) {
         "{\n"
         "  \"opacity\": %.3f,\n"
         "  \"invert\": %d,\n"
-        "  \"persistent\": %d,\n"
         "  \"hotkey\": \"%s\",\n"
         "  \"scale\": %.3f,\n"
         "  \"use_custom_size\": %d,\n"
@@ -212,7 +212,6 @@ int save_config(const Config *cfg, const char *path) {
         "}\n",
         cfg->opacity,
         cfg->invert ? 1 : 0,
-        cfg->persistent ? 1 : 0,
         cfg->hotkey,
         cfg->scale,
         cfg->use_custom_size ? 1 : 0,

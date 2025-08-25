@@ -11,7 +11,6 @@ extern "C" {
 typedef struct {
     float opacity;
     int invert;
-    int persistent;         /* DEPRECATED: preserved for migration; persistent behavior == auto_hide == 0.0 */
     char hotkey[64];       /* Mutable hotkey string (UTF-8, e.g. "Ctrl+Alt+Shift+Slash") */
     float scale;           /* Image scale factor (0.5 = 50%, 1.0 = 100%, 2.0 = 200%) */
     int position_x;        /* X offset from center (-100 = 100px left, 100 = 100px right) */
@@ -36,7 +35,6 @@ static inline Config get_default_config(void) {
     Config config;
     config.opacity = 0.8f;
     config.invert = 0;
-    config.persistent = 0;    /* kept for migration compatibility */
     config.scale = 1.0f;
     config.position_x = 0;    /* Centered */
     config.position_y = 100;  /* 100px from bottom */

@@ -342,8 +342,8 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                         if (g_key_pressed) {
                             g_key_pressed = 0;
                             logger_log("Hotkey released (vk=%u)", (unsigned)pk->vkCode);
-                            /* In non-persistent mode, hide on release; persistent mode ignores release */
-                            if (!g_config.persistent) {
+                            /* Hide on release only when auto-hide is enabled */
+                            if (g_config.auto_hide > 0.0f) {
                                 PostMessage(g_hidden_window, MSG_HIDE_OVERLAY, 0, 0);
                             }
                         }
@@ -353,7 +353,7 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
                     if (g_key_pressed) {
                         g_key_pressed = 0;
                         logger_log("Hotkey modifiers changed - hiding overlay");
-                        if (!g_config.persistent) {
+                        if (g_config.auto_hide > 0.0f) {
                             PostMessage(g_hidden_window, MSG_HIDE_OVERLAY, 0, 0);
                         }
                     }
@@ -389,9 +389,9 @@ static void show_overlay(void) {
     ShowWindow(g_window, SW_SHOWNOACTIVATE);
     g_visible = 1;
     
-    /* Auto-hide timer for non-persistent mode (matching macOS behavior) */
-    if (!g_config.persistent) {
-        SetTimer(g_hidden_window, 1, 800, NULL);  // 0.8 seconds like macOS
+    /* Auto-hide timer when enabled */
+    if (g_config.auto_hide > 0.0f) {
+        SetTimer(g_hidden_window, 1, (UINT)(g_config.auto_hide * 1000), NULL);
     }
 }
 
