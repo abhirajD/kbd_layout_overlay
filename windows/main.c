@@ -636,10 +636,11 @@ static void open_prefs_window(void) {
     RegisterClassA(&wc);
 
     int w = 380, h = 380;
-    int sx = GetSystemMetrics(SM_CXSCREEN);
-    int sy = GetSystemMetrics(SM_CYSCREEN);
-    int x = (sx - w) / 2;
-    int y = (sy - h) / 2;
+    RECT mon = get_monitor_rect(g_config.monitor_index);
+    int sx = mon.right - mon.left;
+    int sy = mon.bottom - mon.top;
+    int x = mon.left + (sx - w) / 2;
+    int y = mon.top + (sy - h) / 2;
 
     g_prefs_window = CreateWindowExA(WS_EX_TOOLWINDOW, cls, "Preferences",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
@@ -794,8 +795,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             reload_overlay_if_needed();
             break;
         case 205: /* Fit Screen */ {
-            /* Calculate scale to fit 80% of primary monitor width */
-            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+            /* Calculate scale to fit 80% of selected monitor width */
+            RECT mon = get_monitor_rect(g_config.monitor_index);
+            int screenWidth = mon.right - mon.left;
             float targetWidth = screenWidth * 0.8f;
             if (g_overlay.width > 0) {
                 g_config.scale = targetWidth / g_overlay.width;
