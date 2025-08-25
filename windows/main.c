@@ -851,6 +851,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             /* Open preferences for custom auto-hide setting */
             open_prefs_window();
             break;
+        case ID_PREFS_OPEN:
+            open_prefs_window();
+            break;
         case 3: /* Quit */
             PostQuitMessage(0);
             break;
