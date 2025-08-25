@@ -78,13 +78,47 @@ static void cleanup_resources(void) {
 }
 
 /* Get virtual desktop bounds (multi-monitor support from working example) */
-static RECT get_virtual_desktop(void) {
-    RECT r;
-    r.left   = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    r.top    = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    r.right  = r.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    r.bottom = r.top  + GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    return r;
+typedef struct {
+    int target;
+    int index;
+    RECT rect;
+    int found;
+} MonitorEnumData;
+
+static BOOL CALLBACK MonitorEnumProc(HMONITOR hMon, HDC hdc, LPRECT lprcMonitor, LPARAM lParam) {
+    MonitorEnumData *data = (MonitorEnumData *)lParam;
+    if (data->index == data->target) {
+        data->rect = *lprcMonitor;
+        data->found = 1;
+        return FALSE;
+    }
+    data->index++;
+    return TRUE;
+}
+
+static RECT get_monitor_rect(int monitor_index) {
+    MonitorEnumData data = { monitor_index, 0, {0,0,0,0}, 0 };
+    EnumDisplayMonitors(NULL, NULL, MonitorEnumProc, (LPARAM)&data);
+    if (!data.found) {
+        data.rect.left = 0;
+        data.rect.top = 0;
+        data.rect.right = GetSystemMetrics(SM_CXSCREEN);
+        data.rect.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+    return data.rect;
+}
+
+static BOOL CALLBACK CountMonitorsProc(HMONITOR hMon, HDC hdc, LPRECT lprc, LPARAM lParam) {
+    int *count = (int *)lParam;
+    (*count)++;
+    return TRUE;
+}
+
+static int get_monitor_count(void) {
+    int count = 0;
+    EnumDisplayMonitors(NULL, NULL, CountMonitorsProc, (LPARAM)&count);
+    if (count <= 0) count = 1;
+    return count;
 }
 
 static int parse_hotkey(const char *hotkey_str, UINT *modifiers, UINT *vk) {
@@ -288,14 +322,14 @@ static void show_overlay(void) {
     
     SelectObject(g_mem_dc, g_bitmap);
     
-    /* Use virtual desktop bounds for multi-monitor support */
-    RECT vdesktop = get_virtual_desktop();
-    int screen_w = vdesktop.right - vdesktop.left;
-    int screen_h = vdesktop.bottom - vdesktop.top;
-    
-    /* Center overlay on virtual desktop */
-    int x = vdesktop.left + (screen_w - g_overlay.width) / 2 + g_config.position_x;
-    int y = vdesktop.top + screen_h - g_overlay.height - g_config.position_y;
+    /* Use selected monitor bounds */
+    RECT mon = get_monitor_rect(g_config.monitor_index);
+    int screen_w = mon.right - mon.left;
+    int screen_h = mon.bottom - mon.top;
+
+    /* Center overlay on chosen monitor */
+    int x = mon.left + (screen_w - g_overlay.width) / 2 + g_config.position_x;
+    int y = mon.top + screen_h - g_overlay.height - g_config.position_y;
     
     SetWindowPos(g_window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     
@@ -375,6 +409,17 @@ static void show_tray_menu(void) {
     AppendMenuA(autoHideMenu, MF_STRING | (fabsf(g_config.auto_hide - 2.0f) < 0.001f ? MF_CHECKED : 0), 403, "2.0s");
     AppendMenuA(autoHideMenu, MF_STRING, 404, "Custom...");
     AppendMenuA(menu, MF_STRING | MF_POPUP, (UINT_PTR)autoHideMenu, "Auto-hide");
+
+    /* Monitor submenu */
+    HMENU monitorMenu = CreatePopupMenu();
+    int mcount = get_monitor_count();
+    for (int i = 0; i < mcount; i++) {
+        char label[32];
+        snprintf(label, sizeof(label), "Monitor %d", i + 1);
+        UINT flags = MF_STRING | (i == g_config.monitor_index ? MF_CHECKED : 0);
+        AppendMenuA(monitorMenu, flags, 500 + i, label);
+    }
+    AppendMenuA(menu, MF_STRING | MF_POPUP, (UINT_PTR)monitorMenu, "Monitor");
     
     AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
     
@@ -737,6 +782,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case 3: /* Quit */
             PostQuitMessage(0);
             break;
+        default:
+            if (LOWORD(wParam) >= 500 && LOWORD(wParam) < 500 + get_monitor_count()) {
+                g_config.monitor_index = LOWORD(wParam) - 500;
+                save_config(&g_config, NULL);
+                if (g_visible) show_overlay();
+            }
+            break;
         }
         break;
         
@@ -792,13 +844,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     g_hidden_window = CreateWindowA("KbdLayoutOverlay", "", 0, 0, 0, 0, 0, 
                                     HWND_MESSAGE, NULL, hInst, NULL);
     
-    /* Create overlay window spanning virtual desktop */
-    RECT vdesktop = get_virtual_desktop();
+    /* Create overlay window on selected monitor */
+    RECT mon = get_monitor_rect(g_config.monitor_index);
     g_window = CreateWindowExA(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                                "KbdLayoutOverlay", "", WS_POPUP,
-                               vdesktop.left, vdesktop.top, 
-                               vdesktop.right - vdesktop.left, 
-                               vdesktop.bottom - vdesktop.top,
+                               mon.left, mon.top,
+                               mon.right - mon.left,
+                               mon.bottom - mon.top,
                                NULL, NULL, hInst, NULL);
     
     if (!g_window || !g_hidden_window) {
