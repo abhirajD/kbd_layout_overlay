@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 #include "config.h"
 #include "overlay.h"
 #include "log.h"
@@ -63,6 +64,11 @@ static HWND g_autohide_label = NULL;
 #define IDC_OPACITY_LABEL 209
 #define IDC_AUTOHIDE_SLIDER 210
 #define IDC_AUTOHIDE_LABEL 211
+
+/* Forward declarations for label update helpers */
+static void update_scale_label(void);
+static void update_opacity_label(void);
+static void update_autohide_label(void);
 
 static void cleanup_resources(void) {
     if (g_bitmap) DeleteObject(g_bitmap);
