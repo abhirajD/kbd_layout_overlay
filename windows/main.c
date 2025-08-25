@@ -430,10 +430,10 @@ static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lP
 }
 
 static void show_overlay(void) {
-    if (!g_window || g_visible) return;
-    
+    if (!g_window) return;
+
     SelectObject(g_mem_dc, g_bitmap);
-    
+
     /* Use selected monitor bounds */
     RECT mon = get_monitor_rect(g_config.monitor_index);
     int screen_w = mon.right - mon.left;
@@ -442,20 +442,21 @@ static void show_overlay(void) {
     /* Center overlay on chosen monitor */
     int x = mon.left + (screen_w - g_overlay.width) / 2 + g_config.position_x;
     int y = mon.top + screen_h - g_overlay.height - g_config.position_y;
-    
+
     SetWindowPos(g_window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-    
+
     SIZE size = {g_overlay.width, g_overlay.height};
     POINT src = {0, 0};
     POINT dst = {x, y};
     BLENDFUNCTION bf = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
-    
+
     UpdateLayeredWindow(g_window, g_screen_dc, &dst, &size, g_mem_dc, &src, 0, &bf, ULW_ALPHA);
     ShowWindow(g_window, SW_SHOWNOACTIVATE);
     g_visible = 1;
-    
-    /* Auto-hide timer when enabled */
+
+    /* Auto-hide timer when enabled. Reset if already running to avoid overlap. */
     if (g_config.auto_hide > 0.0f) {
+        KillTimer(g_hidden_window, 1);
         SetTimer(g_hidden_window, 1, (UINT)(g_config.auto_hide * 1000), NULL);
     }
 }
