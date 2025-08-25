@@ -735,7 +735,13 @@ static void open_prefs_window(void) {
     wc.hbrBackground = (HBRUSH)(COLOR_3DFACE + 1);
     RegisterClassA(&wc);
 
-    int w = 380, h = 480;
+    /* Calculate window size so that the client area has enough space for all controls */
+    int client_w = 380;
+    int client_h = 500; /* leave room for OK/Cancel buttons */
+    RECT wr = {0, 0, client_w, client_h};
+    AdjustWindowRect(&wr, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, FALSE);
+    int w = wr.right - wr.left;
+    int h = wr.bottom - wr.top;
     int sx = GetSystemMetrics(SM_CXSCREEN);
     int sy = GetSystemMetrics(SM_CYSCREEN);
     int x = (sx - w) / 2;
