@@ -28,6 +28,7 @@ typedef struct {
     int start_at_login;    /* 0 = disabled, 1 = enabled (recorded only) */
     int click_through;     /* 0 = false, 1 = true (maps to setIgnoresMouseEvents:) */
     int always_on_top;     /* 0 = false, 1 = true (may map to window level) */
+    int monitor_index;     /* 0 = primary monitor */
 } Config;
 
 /* Get default configuration */
@@ -51,6 +52,7 @@ static inline Config get_default_config(void) {
     config.start_at_login = 0;
     config.click_through = 0;
     config.always_on_top = 0;
+    config.monitor_index = 0;
 
 #ifdef _WIN32
     /* default hotkey */

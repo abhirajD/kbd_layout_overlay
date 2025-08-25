@@ -164,6 +164,7 @@ int load_config(Config *out, const char *path) {
     if (parse_int_field(buf, "\"start_at_login\"", &out->start_at_login)) any = 1;
     if (parse_int_field(buf, "\"click_through\"", &out->click_through)) any = 1;
     if (parse_int_field(buf, "\"always_on_top\"", &out->always_on_top)) any = 1;
+    if (parse_int_field(buf, "\"monitor_index\"", &out->monitor_index)) any = 1;
 
     /* Migration: legacy persistent flag maps to auto_hide == 0.0 (persistent) */
     if (out->persistent == 1) {
@@ -175,6 +176,7 @@ int load_config(Config *out, const char *path) {
     if (out->auto_hide > 3.0f) out->auto_hide = 3.0f;
     if (out->scale < 0.5f) out->scale = 0.5f;
     if (out->scale > 2.0f) out->scale = 2.0f;
+    if (out->monitor_index < 0) out->monitor_index = 0;
 
     free(buf);
     return any ? 1 : 0;
@@ -205,7 +207,8 @@ int save_config(const Config *cfg, const char *path) {
         "  \"position_mode\": %d,\n"
         "  \"start_at_login\": %d,\n"
         "  \"click_through\": %d,\n"
-        "  \"always_on_top\": %d\n"
+        "  \"always_on_top\": %d,\n"
+        "  \"monitor_index\": %d\n"
         "}\n",
         cfg->opacity,
         cfg->invert ? 1 : 0,
@@ -221,7 +224,8 @@ int save_config(const Config *cfg, const char *path) {
         cfg->position_mode,
         cfg->start_at_login ? 1 : 0,
         cfg->click_through ? 1 : 0,
-        cfg->always_on_top ? 1 : 0
+        cfg->always_on_top ? 1 : 0,
+        cfg->monitor_index
     );
     fflush(f);
     fclose(f);

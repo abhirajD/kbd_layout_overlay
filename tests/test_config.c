@@ -18,6 +18,7 @@ int main(void) {
         c.auto_hide = 2.0f;
         c.position_mode = 1;
         c.click_through = 1;
+        c.monitor_index = 1;
         const char *hk = "Command+Option+K";
         strncpy(c.hotkey, hk, sizeof(c.hotkey)-1);
         c.hotkey[sizeof(c.hotkey)-1] = '\0';
@@ -35,9 +36,9 @@ int main(void) {
             return 3;
         }
 
-        if (!float_eq(out.auto_hide, 2.0f) || out.position_mode != 1 || out.click_through != 1 || strcmp(out.hotkey, hk) != 0) {
-            fprintf(stderr, "Test1: mismatch after load: auto_hide=%.3f pos=%d click=%d hotkey=%s\n",
-                    out.auto_hide, out.position_mode, out.click_through, out.hotkey);
+        if (!float_eq(out.auto_hide, 2.0f) || out.position_mode != 1 || out.click_through != 1 || out.monitor_index != 1 || strcmp(out.hotkey, hk) != 0) {
+            fprintf(stderr, "Test1: mismatch after load: auto_hide=%.3f pos=%d click=%d monitor=%d hotkey=%s\n",
+                    out.auto_hide, out.position_mode, out.click_through, out.monitor_index, out.hotkey);
             unlink(path);
             return 4;
         }
