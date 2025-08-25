@@ -16,6 +16,7 @@ static int g_key_pressed = 0;
 #define HOTKEY_ID 1
 
 static Config g_config;
+static Config g_config_backup;
 static Overlay g_overlay;
 static HWND g_window = NULL;
 static HWND g_hidden_window = NULL;
@@ -511,6 +512,21 @@ static void show_tray_menu(void) {
     DestroyMenu(menu);
 }
 
+static void restore_config_backup(void) {
+    g_config = g_config_backup;
+
+    UINT modifiers = 0, vk = 0;
+    if (parse_hotkey(g_config.hotkey, &modifiers, &vk)) {
+        g_hook_modifiers = modifiers;
+        g_hook_vk = vk;
+    }
+
+    if (g_visible) {
+        apply_effects(&g_overlay, g_config.opacity, g_config.invert);
+    }
+    reload_overlay_if_needed();
+}
+
 /* Preferences window implementation (simple): editable hotkey and opacity (0-100) */
 static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -577,9 +593,7 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 return 0;
             }
             case IDC_PREFS_CANCEL:
-                /* Cancel pressed - restore original values */
-                /* Note: For full implementation, we should save original values when window opens
-                   and restore them here. For now, just close the window. */
+                restore_config_backup();
                 DestroyWindow(hwnd);
                 g_prefs_window = NULL;
                 return 0;
@@ -587,6 +601,7 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         }
         break;
     case WM_CLOSE:
+        restore_config_backup();
         DestroyWindow(hwnd);
         g_prefs_window = NULL;
         return 0;
@@ -625,6 +640,8 @@ static void open_prefs_window(void) {
         SetForegroundWindow(g_prefs_window);
         return;
     }
+
+    g_config_backup = g_config;
 
     HINSTANCE hInst = GetModuleHandle(NULL);
     const char *cls = "KLO_Prefs_Class";
