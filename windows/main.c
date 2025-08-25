@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <math.h>
 #include "config.h"
 #include "overlay.h"
@@ -183,34 +184,97 @@ static int ensure_original_image(void) {
     return 0;
 }
 
+/* Case-insensitive string comparison */
+static int strieq(const char *a, const char *b) {
+    while (*a && *b) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+            return 0;
+        }
+        a++;
+        b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+typedef struct {
+    const char *name;
+    UINT vk;
+} KeyMapEntry;
+
+static const KeyMapEntry g_key_map[] = {
+    {"Slash",    VK_OEM_2},
+    {"Space",    VK_SPACE},
+    {"Enter",    VK_RETURN},
+    {"Escape",   VK_ESCAPE},
+    {"Tab",      VK_TAB},
+    {"Backspace",VK_BACK},
+    {"Delete",   VK_DELETE},
+    {"Insert",   VK_INSERT},
+    {"Home",     VK_HOME},
+    {"End",      VK_END},
+    {"PgUp",     VK_PRIOR},
+    {"PageUp",   VK_PRIOR},
+    {"PgDown",   VK_NEXT},
+    {"PageDown", VK_NEXT},
+    {"Up",       VK_UP},
+    {"Down",     VK_DOWN},
+    {"Left",     VK_LEFT},
+    {"Right",    VK_RIGHT},
+    {"F1",       VK_F1},
+    {"F2",       VK_F2},
+    {"F3",       VK_F3},
+    {"F4",       VK_F4},
+    {"F5",       VK_F5},
+    {"F6",       VK_F6},
+    {"F7",       VK_F7},
+    {"F8",       VK_F8},
+    {"F9",       VK_F9},
+    {"F10",      VK_F10},
+    {"F11",      VK_F11},
+    {"F12",      VK_F12},
+    {NULL, 0}
+};
+
 static int parse_hotkey(const char *hotkey_str, UINT *modifiers, UINT *vk) {
     if (!hotkey_str || !modifiers || !vk) return 0;
     *modifiers = 0;
     *vk = 0;
-    
-    if (strstr(hotkey_str, "Ctrl")) *modifiers |= MOD_CONTROL;
-    if (strstr(hotkey_str, "Alt")) *modifiers |= MOD_ALT;
-    if (strstr(hotkey_str, "Shift")) *modifiers |= MOD_SHIFT;
-    if (strstr(hotkey_str, "Win")) *modifiers |= MOD_WIN;
-    
-    /* Support common keys */
-    if (strstr(hotkey_str, "Slash")) *vk = VK_OEM_2;
-    else if (strstr(hotkey_str, "F1")) *vk = VK_F1;
-    else if (strstr(hotkey_str, "F2")) *vk = VK_F2;
-    else if (strstr(hotkey_str, "F3")) *vk = VK_F3;
-    else if (strstr(hotkey_str, "F4")) *vk = VK_F4;
-    else if (strstr(hotkey_str, "F5")) *vk = VK_F5;
-    else if (strstr(hotkey_str, "F6")) *vk = VK_F6;
-    else if (strstr(hotkey_str, "F7")) *vk = VK_F7;
-    else if (strstr(hotkey_str, "F8")) *vk = VK_F8;
-    else if (strstr(hotkey_str, "F9")) *vk = VK_F9;
-    else if (strstr(hotkey_str, "F10")) *vk = VK_F10;
-    else if (strstr(hotkey_str, "F11")) *vk = VK_F11;
-    else if (strstr(hotkey_str, "F12")) *vk = VK_F12;
-    else if (strstr(hotkey_str, "Space")) *vk = VK_SPACE;
-    else if (strstr(hotkey_str, "Enter")) *vk = VK_RETURN;
-    else if (strstr(hotkey_str, "Escape")) *vk = VK_ESCAPE;
-    else if (strstr(hotkey_str, "Enter")) *vk = VK_RETURN;
+
+    char buf[128];
+    strncpy(buf, hotkey_str, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    for (char *token = strtok(buf, "+"); token; token = strtok(NULL, "+")) {
+        while (*token == ' ' || *token == '\t') token++;
+        char *end = token + strlen(token);
+        while (end > token && (end[-1] == ' ' || end[-1] == '\t')) {
+            *--end = '\0';
+        }
+
+        if (strieq(token, "Ctrl") || strieq(token, "Control")) {
+            *modifiers |= MOD_CONTROL;
+        } else if (strieq(token, "Alt")) {
+            *modifiers |= MOD_ALT;
+        } else if (strieq(token, "Shift")) {
+            *modifiers |= MOD_SHIFT;
+        } else if (strieq(token, "Win") || strieq(token, "Windows")) {
+            *modifiers |= MOD_WIN;
+        } else {
+            for (const KeyMapEntry *km = g_key_map; km->name; ++km) {
+                if (strieq(token, km->name)) {
+                    *vk = km->vk;
+                    break;
+                }
+            }
+            if (*vk == 0 && strlen(token) == 1) {
+                unsigned char c = (unsigned char)token[0];
+                if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 'a' + 'A');
+                if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+                    *vk = (UINT)c;
+                }
+            }
+        }
+    }
 
     /* Require at least one modifier and a recognized non-modifier key */
     if (*modifiers == 0 || *vk == 0) {
