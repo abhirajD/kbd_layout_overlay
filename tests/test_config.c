@@ -49,13 +49,13 @@ int main(void) {
 
     /* Test 2: legacy migration - persistent -> auto_hide == 0.0 */
     {
-        Config m = get_default_config();
-        m.persistent = 1;
-        m.auto_hide = 0.8f; /* intentionally non-zero; migration should override when loading */
-        if (!save_config(&m, path)) {
-            fprintf(stderr, "Test2: save_config failed\n");
+        FILE *f = fopen(path, "wb");
+        if (!f) {
+            fprintf(stderr, "Test2: fopen failed\n");
             return 10;
         }
+        fprintf(f, "{\n  \"persistent\": 1,\n  \"auto_hide\": 0.8\n}\n");
+        fclose(f);
 
         Config out = get_default_config();
         int r = load_config(&out, path);
@@ -66,7 +66,7 @@ int main(void) {
         }
 
         if (!float_eq(out.auto_hide, 0.0f)) {
-            fprintf(stderr, "Test2: migration failed - expected auto_hide==0.0 got %.3f (persistent=%d)\n", out.auto_hide, out.persistent);
+            fprintf(stderr, "Test2: migration failed - expected auto_hide==0.0 got %.3f\n", out.auto_hide);
             unlink(path);
             return 12;
         }

@@ -1087,20 +1087,18 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
 
 - (void)setAutoHideOff:(id)sender {
     _config.auto_hide = 0.0f;
-    /* keep legacy flag for migration parity */
-    _config.persistent = 1;
     save_config(&_config, NULL);
     _statusItem.menu = [self buildMenu];
 }
+
 - (void)setAutoHide08:(id)sender {
     _config.auto_hide = 0.8f;
-    _config.persistent = 0;
     save_config(&_config, NULL);
     _statusItem.menu = [self buildMenu];
 }
+
 - (void)setAutoHide2s:(id)sender {
     _config.auto_hide = 2.0f;
-    _config.persistent = 0;
     save_config(&_config, NULL);
     _statusItem.menu = [self buildMenu];
 }
@@ -1195,13 +1193,13 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
     NSLog(@"Changed opacity to %.0f%%", opacity * 100);
 }
 
-/* Toggle Show Keymap - persistent visibility control */
+/* Toggle Show Keymap with optional auto-hide */
 - (void)toggleShowKeymap:(id)sender {
     if (_visible) {
         [self hideOverlay];
     } else {
         [self showOverlay];
-        /* If not in persistent mode (auto_hide > 0), schedule hide timer */
+        /* If auto-hide is enabled, schedule hide timer */
         if (_config.auto_hide > 0.0f && _carbonHideTimer == nil) {
             _carbonHideTimer = [NSTimer scheduledTimerWithTimeInterval:_config.auto_hide repeats:NO block:^(NSTimer * _Nonnull t) {
                 [self hideOverlay];
@@ -1312,7 +1310,7 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
     _prefAutoHidePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     _prefAutoHidePopup.translatesAutoresizingMaskIntoConstraints = NO;
     [_prefAutoHidePopup addItemsWithTitles:@[@"Off (Persistent)", @"0.8s", @"2s"]];
-    if (_config.auto_hide <= 0.0f || _config.persistent) {
+    if (_config.auto_hide <= 0.0f) {
         [_prefAutoHidePopup selectItemAtIndex:0];
     } else if (fabsf(_config.auto_hide - 0.8f) < 0.001f) {
         [_prefAutoHidePopup selectItemAtIndex:1];
@@ -1452,7 +1450,6 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
                            _config.custom_height_px == defaults.custom_height_px &&
                            fabsf(_config.opacity - defaults.opacity) < 0.001f &&
                            _config.invert == defaults.invert &&
-                           _config.persistent == defaults.persistent &&
                            fabsf(_config.scale - defaults.scale) < 0.001f &&
                            hkEqual &&
                            _config.position_mode == defaults.position_mode &&
@@ -1700,25 +1697,21 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
     /* Opacity */
     _config.opacity = (float)[_prefOpacitySlider doubleValue];
 
-    /* Auto-hide popup -> config.auto_hide and persistent migration flag */
+    /* Auto-hide popup -> config.auto_hide */
     if (_prefAutoHidePopup) {
         NSInteger idx = [_prefAutoHidePopup indexOfSelectedItem];
         switch (idx) {
             case 0: /* Off / persistent */
                 _config.auto_hide = 0.0f;
-                _config.persistent = 1;
                 break;
             case 1:
                 _config.auto_hide = 0.8f;
-                _config.persistent = 0;
                 break;
             case 2:
                 _config.auto_hide = 2.0f;
-                _config.persistent = 0;
                 break;
             default:
                 _config.auto_hide = 0.8f;
-                _config.persistent = 0;
                 break;
         }
     }
@@ -1834,7 +1827,6 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
                            _config.custom_height_px == defaults.custom_height_px &&
                            fabsf(_config.opacity - defaults.opacity) < 0.001f &&
                            _config.invert == defaults.invert &&
-                           _config.persistent == defaults.persistent &&
                            fabsf(_config.scale - defaults.scale) < 0.001f &&
                            hkEqual &&
                            _config.position_mode == defaults.position_mode &&
@@ -1874,7 +1866,7 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
 
     /* New UI fields: Auto-hide, Position, Click-through, Always-on-top */
     if (_prefAutoHidePopup) {
-        if (_config.auto_hide <= 0.0f || _config.persistent) {
+        if (_config.auto_hide <= 0.0f) {
             [_prefAutoHidePopup selectItemAtIndex:0];
         } else if (fabsf(_config.auto_hide - 0.8f) < 0.001f) {
             [_prefAutoHidePopup selectItemAtIndex:1];
@@ -1924,8 +1916,7 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
 }
 
 - (BOOL)isPersistent {
-    /* Consider legacy persistent flag but prefer explicit auto_hide == 0.0 semantics */
-    return (_config.persistent || fabsf(_config.auto_hide - 0.0f) < 0.0001f);
+    return fabsf(_config.auto_hide - 0.0f) < 0.0001f;
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
