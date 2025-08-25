@@ -46,6 +46,10 @@ static HWND g_opacity_slider = NULL;
 static HWND g_opacity_label = NULL;
 static HWND g_autohide_slider = NULL;
 static HWND g_autohide_label = NULL;
+static HWND g_position_combo = NULL;
+static HWND g_clickthrough_check = NULL;
+static HWND g_alwaysontop_check = NULL;
+static HWND g_startatlogin_check = NULL;
 
 /* Original overlay image (PNG data) and last-used sizing config */
 static unsigned char *g_original_image = NULL;
@@ -72,11 +76,18 @@ static int g_last_use_custom = -1;
 #define IDC_OPACITY_LABEL 209
 #define IDC_AUTOHIDE_SLIDER 210
 #define IDC_AUTOHIDE_LABEL 211
+#define IDC_POSITION_LABEL 212
+#define IDC_POSITION_COMBO 213
+#define IDC_CLICKTHROUGH_CHECK 214
+#define IDC_ALWAYSONTOP_CHECK 215
+#define IDC_STARTATLOGIN_CHECK 216
 
 /* Forward declarations for label update helpers */
 static void update_scale_label(void);
 static void update_opacity_label(void);
 static void update_autohide_label(void);
+static void apply_window_config(void);
+static void update_startup_registration(void);
 
 static void cleanup_resources(void) {
     if (g_bitmap) DeleteObject(g_bitmap);
@@ -374,11 +385,30 @@ static void show_overlay(void) {
     int screen_w = mon.right - mon.left;
     int screen_h = mon.bottom - mon.top;
 
-    /* Center overlay on chosen monitor */
-    int x = mon.left + (screen_w - g_overlay.width) / 2 + g_config.position_x;
-    int y = mon.top + screen_h - g_overlay.height - g_config.position_y;
-    
-    SetWindowPos(g_window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    int x = mon.left;
+    int y = mon.top;
+    switch (g_config.position_mode) {
+    case 0: /* Center */
+        x = mon.left + (screen_w - g_overlay.width) / 2;
+        y = mon.top + (screen_h - g_overlay.height) / 2;
+        break;
+    case 1: /* Top-Center */
+        x = mon.left + (screen_w - g_overlay.width) / 2;
+        y = mon.top + g_config.position_y;
+        break;
+    case 2: /* Bottom-Center */
+        x = mon.left + (screen_w - g_overlay.width) / 2;
+        y = mon.bottom - g_overlay.height - g_config.position_y;
+        break;
+    case 3: /* Custom */
+    default:
+        x = mon.left + (screen_w - g_overlay.width) / 2 + g_config.position_x;
+        y = mon.bottom - g_overlay.height - g_config.position_y;
+        break;
+    }
+
+    HWND insertAfter = g_config.always_on_top ? HWND_TOPMOST : HWND_TOP;
+    SetWindowPos(g_window, insertAfter, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     
     SIZE size = {g_overlay.width, g_overlay.height};
     POINT src = {0, 0};
@@ -561,17 +591,31 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 /* Update hook mapping immediately (safe: parsing already succeeded) */
                 g_hook_modifiers = modifiers;
                 g_hook_vk = vk;
-                
+
+                /* Read new checkbox/combo states */
+                int sel = (int)SendMessage(g_position_combo, CB_GETCURSEL, 0, 0);
+                if (sel >= 0 && sel <= 3) g_config.position_mode = sel;
+                g_config.click_through = (SendMessage(g_clickthrough_check, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+                g_config.always_on_top = (SendMessage(g_alwaysontop_check, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+                g_config.start_at_login = (SendMessage(g_startatlogin_check, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+
                 /* Sliders have already updated g_config values in real-time */
                 /* Just persist the configuration */
                 save_config(&g_config, NULL);
-                
+
+                /* Apply window style changes and startup registration */
+                apply_window_config();
+                update_startup_registration();
+
+                /* Reposition if needed */
+                if (g_visible) show_overlay();
+
                 /* Ensure final state is applied */
                 if (g_visible) {
                     apply_effects(&g_overlay, g_config.opacity, g_config.invert);
                 }
                 reload_overlay_if_needed();
-                
+
                 DestroyWindow(hwnd);
                 g_prefs_window = NULL;
                 return 0;
@@ -620,6 +664,34 @@ static void update_autohide_label(void) {
     SetWindowTextA(g_autohide_label, buf);
 }
 
+static void apply_window_config(void) {
+    if (!g_window) return;
+    LONG_PTR ex = GetWindowLongPtr(g_window, GWL_EXSTYLE);
+    if (g_config.click_through) ex |= WS_EX_TRANSPARENT;
+    else ex &= ~WS_EX_TRANSPARENT;
+    if (g_config.always_on_top) ex |= WS_EX_TOPMOST;
+    else ex &= ~WS_EX_TOPMOST;
+    SetWindowLongPtr(g_window, GWL_EXSTYLE, ex);
+    HWND insertAfter = g_config.always_on_top ? HWND_TOPMOST : HWND_NOTOPMOST;
+    SetWindowPos(g_window, insertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+static void update_startup_registration(void) {
+    char path[MAX_PATH];
+    if (!GetModuleFileNameA(NULL, path, (DWORD)sizeof(path))) return;
+    HKEY key;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER,
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS) {
+        if (g_config.start_at_login) {
+            RegSetValueExA(key, "KbdLayoutOverlay", 0, REG_SZ,
+                           (const BYTE *)path, (DWORD)(strlen(path) + 1));
+        } else {
+            RegDeleteValueA(key, "KbdLayoutOverlay");
+        }
+        RegCloseKey(key);
+    }
+}
+
 static void open_prefs_window(void) {
     if (g_prefs_window) {
         SetForegroundWindow(g_prefs_window);
@@ -635,7 +707,7 @@ static void open_prefs_window(void) {
     wc.hbrBackground = (HBRUSH)(COLOR_3DFACE + 1);
     RegisterClassA(&wc);
 
-    int w = 380, h = 380;
+    int w = 380, h = 560;
     int sx = GetSystemMetrics(SM_CXSCREEN);
     int sy = GetSystemMetrics(SM_CYSCREEN);
     int x = (sx - w) / 2;
@@ -697,13 +769,13 @@ static void open_prefs_window(void) {
     yPos += 80;
 
     /* Auto-hide Group */
-    CreateWindowExA(WS_EX_DLGMODALFRAME, "BUTTON", "Auto-hide", 
+    CreateWindowExA(WS_EX_DLGMODALFRAME, "BUTTON", "Auto-hide",
                     WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
                     15, yPos, 340, 60, g_prefs_window, NULL, hInst, NULL);
-    
+
     g_autohide_label = CreateWindowExA(0, "STATIC", "Auto-hide: Off", WS_CHILD | WS_VISIBLE,
                     25, yPos + 20, 120, 20, g_prefs_window, (HMENU)IDC_AUTOHIDE_LABEL, hInst, NULL);
-    
+
     /* Auto-hide slider: Off, 0.5s to 5.0s (values 0-50, where 0=off, 1-50 = 0.1s * value) */
     g_autohide_slider = CreateWindowExA(0, TRACKBAR_CLASS, NULL,
                     WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS,
@@ -712,7 +784,44 @@ static void open_prefs_window(void) {
     SendMessage(g_autohide_slider, TBM_SETTICFREQ, 10, 0);
     int autohide_pos = (g_config.auto_hide == 0.0f) ? 0 : (int)(g_config.auto_hide * 10);
     SendMessage(g_autohide_slider, TBM_SETPOS, TRUE, autohide_pos);
-    
+
+    yPos += 80;
+
+    /* Position Group */
+    CreateWindowExA(WS_EX_DLGMODALFRAME, "BUTTON", "Position",
+                    WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                    15, yPos, 340, 60, g_prefs_window, NULL, hInst, NULL);
+
+    CreateWindowExA(0, "STATIC", "Position:", WS_CHILD | WS_VISIBLE,
+                    25, yPos + 20, 120, 20, g_prefs_window, (HMENU)IDC_POSITION_LABEL, hInst, NULL);
+
+    g_position_combo = CreateWindowExA(0, "COMBOBOX", NULL,
+                    WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+                    150, yPos + 18, 190, 150, g_prefs_window, (HMENU)IDC_POSITION_COMBO, hInst, NULL);
+    SendMessage(g_position_combo, CB_ADDSTRING, 0, (LPARAM)"Center");
+    SendMessage(g_position_combo, CB_ADDSTRING, 0, (LPARAM)"Top-Center");
+    SendMessage(g_position_combo, CB_ADDSTRING, 0, (LPARAM)"Bottom-Center");
+    SendMessage(g_position_combo, CB_ADDSTRING, 0, (LPARAM)"Custom");
+    SendMessage(g_position_combo, CB_SETCURSEL, (WPARAM)g_config.position_mode, 0);
+
+    yPos += 80;
+
+    /* Behavior checkboxes */
+    g_clickthrough_check = CreateWindowExA(0, "BUTTON", "Click-through (ignore mouse)",
+                    WS_CHILD | WS_VISIBLE | BS_CHECKBOX,
+                    25, yPos, 200, 20, g_prefs_window, (HMENU)IDC_CLICKTHROUGH_CHECK, hInst, NULL);
+    SendMessage(g_clickthrough_check, BM_SETCHECK, g_config.click_through ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    g_alwaysontop_check = CreateWindowExA(0, "BUTTON", "Always on top",
+                    WS_CHILD | WS_VISIBLE | BS_CHECKBOX,
+                    25, yPos + 25, 200, 20, g_prefs_window, (HMENU)IDC_ALWAYSONTOP_CHECK, hInst, NULL);
+    SendMessage(g_alwaysontop_check, BM_SETCHECK, g_config.always_on_top ? BST_CHECKED : BST_UNCHECKED, 0);
+
+    g_startatlogin_check = CreateWindowExA(0, "BUTTON", "Start at login",
+                    WS_CHILD | WS_VISIBLE | BS_CHECKBOX,
+                    25, yPos + 50, 200, 20, g_prefs_window, (HMENU)IDC_STARTATLOGIN_CHECK, hInst, NULL);
+    SendMessage(g_startatlogin_check, BM_SETCHECK, g_config.start_at_login ? BST_CHECKED : BST_UNCHECKED, 0);
+
     yPos += 80;
 
     /* Update all labels with current values */
@@ -896,6 +1005,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     g_config = get_default_config();
     /* Load persisted config if present (overrides defaults) */
     load_config(&g_config, NULL);
+    update_startup_registration();
 
     /* Initialize logger early for parity with macOS */
     logger_init();
@@ -921,17 +1031,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow)
     
     /* Create overlay window on selected monitor */
     RECT mon = get_monitor_rect(g_config.monitor_index);
-    g_window = CreateWindowExA(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+    DWORD ex = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    if (g_config.click_through) ex |= WS_EX_TRANSPARENT;
+    if (g_config.always_on_top) ex |= WS_EX_TOPMOST;
+    g_window = CreateWindowExA(ex,
                                "KbdLayoutOverlay", "", WS_POPUP,
                                mon.left, mon.top,
                                mon.right - mon.left,
                                mon.bottom - mon.top,
                                NULL, NULL, hInst, NULL);
-    
+
     if (!g_window || !g_hidden_window) {
         cleanup_resources();
         return 1;
     }
+
+    apply_window_config();
     
     /* Register global low-level keyboard hook for press+release detection */
     {
