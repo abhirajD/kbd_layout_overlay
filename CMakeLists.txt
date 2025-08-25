@@ -30,7 +30,7 @@ else()
 endif()
 
 # Shared overlay library
-add_library(overlay_lib STATIC 
+add_library(overlay_lib STATIC
     shared/overlay.c
     shared/config.c
     shared/log.c
@@ -38,6 +38,7 @@ add_library(overlay_lib STATIC
 )
 target_include_directories(overlay_lib PUBLIC shared)
 target_include_directories(overlay_lib PRIVATE "${CMAKE_BINARY_DIR}")
+target_link_libraries(overlay_lib PUBLIC m)
 
 if(EMBED_KEYMAP)
     target_compile_definitions(overlay_lib PRIVATE EMBED_KEYMAP=1)
@@ -48,7 +49,7 @@ if(WIN32)
     add_executable(kbd_layout_overlay WIN32
         windows/main.c
     )
-    target_link_libraries(kbd_layout_overlay PRIVATE overlay_lib user32 gdi32 shell32 comctl32)
+    target_link_libraries(kbd_layout_overlay PRIVATE overlay_lib user32 gdi32 shell32 comctl32 advapi32)
     target_include_directories(kbd_layout_overlay PRIVATE shared)
     
     if(MSVC)
