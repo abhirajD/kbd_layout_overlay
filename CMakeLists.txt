@@ -48,7 +48,7 @@ if(WIN32)
     add_executable(kbd_layout_overlay WIN32
         windows/main.c
     )
-    target_link_libraries(kbd_layout_overlay PRIVATE overlay_lib user32 gdi32 shell32)
+    target_link_libraries(kbd_layout_overlay PRIVATE overlay_lib user32 gdi32 shell32 comctl32)
     target_include_directories(kbd_layout_overlay PRIVATE shared)
     
     if(MSVC)

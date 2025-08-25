@@ -155,6 +155,24 @@ int load_config(Config *out, const char *path) {
     if (parse_int_field(buf, "\"position_y\"", &out->position_y)) any = 1;
     if (parse_string_field(buf, "\"hotkey\"", out->hotkey, sizeof(out->hotkey))) any = 1;
 
+    /* New fields: auto_hide and positioning / general flags */
+    if (parse_float_field(buf, "\"auto_hide\"", &out->auto_hide)) any = 1;
+    if (parse_int_field(buf, "\"position_mode\"", &out->position_mode)) any = 1;
+    if (parse_int_field(buf, "\"start_at_login\"", &out->start_at_login)) any = 1;
+    if (parse_int_field(buf, "\"click_through\"", &out->click_through)) any = 1;
+    if (parse_int_field(buf, "\"always_on_top\"", &out->always_on_top)) any = 1;
+
+    /* Migration: legacy persistent flag maps to auto_hide == 0.0 (persistent) */
+    if (out->persistent == 1) {
+        out->auto_hide = 0.0f;
+    }
+
+    /* Clamp sensible ranges */
+    if (out->auto_hide < 0.0f) out->auto_hide = 0.0f;
+    if (out->auto_hide > 3.0f) out->auto_hide = 3.0f;
+    if (out->scale < 0.5f) out->scale = 0.5f;
+    if (out->scale > 2.0f) out->scale = 2.0f;
+
     free(buf);
     return any ? 1 : 0;
 }
@@ -167,7 +185,7 @@ int save_config(const Config *cfg, const char *path) {
 
     FILE *f = fopen(cfgpath, "wb");
     if (!f) return 0;
-    /* Write minimal pretty JSON */
+    /* Write minimal pretty JSON including new fields */
     int res = fprintf(f,
         "{\n"
         "  \"opacity\": %.3f,\n"
@@ -179,7 +197,12 @@ int save_config(const Config *cfg, const char *path) {
         "  \"custom_width_px\": %d,\n"
         "  \"custom_height_px\": %d,\n"
         "  \"position_x\": %d,\n"
-        "  \"position_y\": %d\n"
+        "  \"position_y\": %d,\n"
+        "  \"auto_hide\": %.3f,\n"
+        "  \"position_mode\": %d,\n"
+        "  \"start_at_login\": %d,\n"
+        "  \"click_through\": %d,\n"
+        "  \"always_on_top\": %d\n"
         "}\n",
         cfg->opacity,
         cfg->invert ? 1 : 0,
@@ -190,7 +213,12 @@ int save_config(const Config *cfg, const char *path) {
         cfg->custom_width_px,
         cfg->custom_height_px,
         cfg->position_x,
-        cfg->position_y
+        cfg->position_y,
+        cfg->auto_hide,
+        cfg->position_mode,
+        cfg->start_at_login ? 1 : 0,
+        cfg->click_through ? 1 : 0,
+        cfg->always_on_top ? 1 : 0
     );
     fflush(f);
     fclose(f);

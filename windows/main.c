@@ -1,6 +1,7 @@
 #define _WIN32_WINNT 0x0601
 #include <windows.h>
 #include <shellapi.h>
+#include <commctrl.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -37,6 +38,14 @@ static HWND g_prefs_custom_size_check = NULL;
 static HWND g_prefs_custom_width_edit = NULL;
 static HWND g_prefs_custom_height_edit = NULL;
 
+/* New enhanced preferences controls */
+static HWND g_scale_slider = NULL;
+static HWND g_scale_label = NULL;
+static HWND g_opacity_slider = NULL;
+static HWND g_opacity_label = NULL;
+static HWND g_autohide_slider = NULL;
+static HWND g_autohide_label = NULL;
+
 /* Control IDs */
 #define ID_PREFS_OPEN 8
 #define IDC_PREFS_OK 101
@@ -46,6 +55,14 @@ static HWND g_prefs_custom_height_edit = NULL;
 #define IDC_USE_CUSTOM_SIZE 203
 #define IDC_CUSTOM_WIDTH 204
 #define IDC_CUSTOM_HEIGHT 205
+
+/* New enhanced preferences controls */
+#define IDC_SCALE_SLIDER 206
+#define IDC_SCALE_LABEL 207
+#define IDC_OPACITY_SLIDER 208
+#define IDC_OPACITY_LABEL 209
+#define IDC_AUTOHIDE_SLIDER 210
+#define IDC_AUTOHIDE_LABEL 211
 
 static void cleanup_resources(void) {
     if (g_bitmap) DeleteObject(g_bitmap);
@@ -318,19 +335,50 @@ static void reload_overlay_with_scale(void) {
     }
 }
 
+/* Enhanced tray menu matching macOS design */
 static void show_tray_menu(void) {
     HMENU menu = CreatePopupMenu();
-    AppendMenuA(menu, MF_STRING | (g_config.persistent ? MF_CHECKED : 0), 1, "Persistent mode");
-    AppendMenuA(menu, MF_STRING | (g_config.invert ? MF_CHECKED : 0), 2, "Invert colors");
+    
+    /* Show Keymap toggle with state indicator */
+    UINT showKeymapFlags = MF_STRING | (g_visible ? MF_CHECKED : 0);
+    AppendMenuA(menu, showKeymapFlags, 101, "Show Keymap");
+    
     AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(menu, MF_STRING | (g_config.scale == 0.5f ? MF_CHECKED : 0), 4, "Size: 50%");
-    AppendMenuA(menu, MF_STRING | (g_config.scale == 0.75f ? MF_CHECKED : 0), 5, "Size: 75%");
-    AppendMenuA(menu, MF_STRING | (g_config.scale == 1.0f ? MF_CHECKED : 0), 6, "Size: 100%");
-    AppendMenuA(menu, MF_STRING | (g_config.scale == 1.5f ? MF_CHECKED : 0), 7, "Size: 150%");
+    
+    /* Scale submenu */
+    HMENU scaleMenu = CreatePopupMenu();
+    AppendMenuA(scaleMenu, MF_STRING | (fabsf(g_config.scale - 0.75f) < 0.001f ? MF_CHECKED : 0), 201, "75%");
+    AppendMenuA(scaleMenu, MF_STRING | (fabsf(g_config.scale - 1.0f) < 0.001f ? MF_CHECKED : 0), 202, "100%");
+    AppendMenuA(scaleMenu, MF_STRING | (fabsf(g_config.scale - 1.25f) < 0.001f ? MF_CHECKED : 0), 203, "125%");
+    AppendMenuA(scaleMenu, MF_STRING | (fabsf(g_config.scale - 1.5f) < 0.001f ? MF_CHECKED : 0), 204, "150%");
+    AppendMenuA(scaleMenu, MF_STRING, 205, "Fit Screen");
+    AppendMenuA(menu, MF_STRING | MF_POPUP, (UINT_PTR)scaleMenu, "Scale");
+    
+    /* Opacity submenu */
+    HMENU opacityMenu = CreatePopupMenu();
+    AppendMenuA(opacityMenu, MF_STRING | (fabsf(g_config.opacity - 0.5f) < 0.001f ? MF_CHECKED : 0), 301, "50%");
+    AppendMenuA(opacityMenu, MF_STRING | (fabsf(g_config.opacity - 0.7f) < 0.001f ? MF_CHECKED : 0), 302, "70%");
+    AppendMenuA(opacityMenu, MF_STRING | (fabsf(g_config.opacity - 0.85f) < 0.001f ? MF_CHECKED : 0), 303, "85%");
+    AppendMenuA(opacityMenu, MF_STRING | (fabsf(g_config.opacity - 1.0f) < 0.001f ? MF_CHECKED : 0), 304, "100%");
+    AppendMenuA(menu, MF_STRING | MF_POPUP, (UINT_PTR)opacityMenu, "Opacity");
+    
+    /* Auto-hide submenu */
+    HMENU autoHideMenu = CreatePopupMenu();
+    AppendMenuA(autoHideMenu, MF_STRING | (g_config.auto_hide == 0.0f ? MF_CHECKED : 0), 401, "Off");
+    AppendMenuA(autoHideMenu, MF_STRING | (fabsf(g_config.auto_hide - 0.8f) < 0.001f ? MF_CHECKED : 0), 402, "0.8s");
+    AppendMenuA(autoHideMenu, MF_STRING | (fabsf(g_config.auto_hide - 2.0f) < 0.001f ? MF_CHECKED : 0), 403, "2.0s");
+    AppendMenuA(autoHideMenu, MF_STRING, 404, "Custom...");
+    AppendMenuA(menu, MF_STRING | MF_POPUP, (UINT_PTR)autoHideMenu, "Auto-hide");
+    
+    AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+    
+    /* Preview Keymap */
+    AppendMenuA(menu, MF_STRING, 102, "Preview Keymap");
+    
+    AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+    
     /* Preferences */
-    AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuA(menu, MF_STRING, ID_PREFS_OPEN, "Preferences...");
-    AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
     AppendMenuA(menu, MF_STRING, 3, "Quit");
     
     POINT p;
@@ -343,15 +391,36 @@ static void show_tray_menu(void) {
 /* Preferences window implementation (simple): editable hotkey and opacity (0-100) */
 static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    case WM_HSCROLL: {
+        /* Handle slider changes for real-time feedback */
+        HWND hSlider = (HWND)lParam;
+        if (hSlider == g_scale_slider) {
+            int pos = (int)SendMessage(hSlider, TBM_GETPOS, 0, 0);
+            g_config.scale = pos / 100.0f;
+            update_scale_label();
+            /* Apply scale immediately for real-time preview */
+            reload_overlay_with_scale();
+            return 0;
+        } else if (hSlider == g_opacity_slider) {
+            int pos = (int)SendMessage(hSlider, TBM_GETPOS, 0, 0);
+            g_config.opacity = pos / 100.0f;
+            update_opacity_label();
+            /* Apply opacity immediately for real-time preview */
+            if (g_visible) {
+                apply_effects(&g_overlay, g_config.opacity, g_config.invert);
+            }
+            return 0;
+        } else if (hSlider == g_autohide_slider) {
+            int pos = (int)SendMessage(hSlider, TBM_GETPOS, 0, 0);
+            g_config.auto_hide = (pos == 0) ? 0.0f : (pos / 10.0f);
+            update_autohide_label();
+            return 0;
+        }
+        break;
+    }
     case WM_COMMAND:
         if (HIWORD(wParam) == BN_CLICKED) {
             switch (LOWORD(wParam)) {
-            case IDC_USE_CUSTOM_SIZE: {
-                BOOL checked = (SendMessage(g_prefs_custom_size_check, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                EnableWindow(g_prefs_custom_width_edit, checked);
-                EnableWindow(g_prefs_custom_height_edit, checked);
-                return 0;
-            }
             case IDC_PREFS_OK: {
                 char buf[128];
                 GetWindowTextA(g_prefs_hotkey_edit, buf, sizeof(buf));
@@ -369,47 +438,25 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 /* Update hook mapping immediately (safe: parsing already succeeded) */
                 g_hook_modifiers = modifiers;
                 g_hook_vk = vk;
-                /* Opacity */
-                char opbuf[32];
-                GetWindowTextA(g_prefs_opacity_edit, opbuf, sizeof(opbuf));
-                float op = (float)atof(opbuf) / 100.0f;
-                if (op < 0.0f) op = 0.0f;
-                if (op > 1.0f) op = 1.0f;
-                g_config.opacity = op;
                 
-                /* Custom sizing */
-                g_config.use_custom_size = (SendMessage(g_prefs_custom_size_check, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
-                
-                if (g_config.use_custom_size) {
-                    char widthbuf[32], heightbuf[32];
-                    GetWindowTextA(g_prefs_custom_width_edit, widthbuf, sizeof(widthbuf));
-                    GetWindowTextA(g_prefs_custom_height_edit, heightbuf, sizeof(heightbuf));
-                    
-                    int width = atoi(widthbuf);
-                    int height = atoi(heightbuf);
-                    
-                    /* Validate dimensions (reasonable limits) */
-                    if (width < 100 || width > 2000 || height < 100 || height > 2000) {
-                        MessageBoxA(hwnd,
-                            "Width and height must be between 100 and 2000 pixels.",
-                            "Invalid Size", MB_OK | MB_ICONERROR);
-                        return 0;
-                    }
-                    
-                    g_config.custom_width_px = width;
-                    g_config.custom_height_px = height;
-                }
-                
-                /* Persist and apply */
+                /* Sliders have already updated g_config values in real-time */
+                /* Just persist the configuration */
                 save_config(&g_config, NULL);
-                apply_effects(&g_overlay, g_config.opacity, g_config.invert);
-                /* Reload overlay if custom sizing changed */
+                
+                /* Ensure final state is applied */
+                if (g_visible) {
+                    apply_effects(&g_overlay, g_config.opacity, g_config.invert);
+                }
                 reload_overlay_with_scale();
+                
                 DestroyWindow(hwnd);
                 g_prefs_window = NULL;
                 return 0;
             }
             case IDC_PREFS_CANCEL:
+                /* Cancel pressed - restore original values */
+                /* Note: For full implementation, we should save original values when window opens
+                   and restore them here. For now, just close the window. */
                 DestroyWindow(hwnd);
                 g_prefs_window = NULL;
                 return 0;
@@ -426,6 +473,30 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     return 0;
 }
 
+static void update_scale_label(void) {
+    char buf[32];
+    int scale_pct = (int)roundf(g_config.scale * 100.0f);
+    snprintf(buf, sizeof(buf), "Scale: %d%%", scale_pct);
+    SetWindowTextA(g_scale_label, buf);
+}
+
+static void update_opacity_label(void) {
+    char buf[32];
+    int opacity_pct = (int)roundf(g_config.opacity * 100.0f);
+    snprintf(buf, sizeof(buf), "Opacity: %d%%", opacity_pct);
+    SetWindowTextA(g_opacity_label, buf);
+}
+
+static void update_autohide_label(void) {
+    char buf[32];
+    if (g_config.auto_hide == 0.0f) {
+        snprintf(buf, sizeof(buf), "Auto-hide: Off");
+    } else {
+        snprintf(buf, sizeof(buf), "Auto-hide: %.1fs", g_config.auto_hide);
+    }
+    SetWindowTextA(g_autohide_label, buf);
+}
+
 static void open_prefs_window(void) {
     if (g_prefs_window) {
         SetForegroundWindow(g_prefs_window);
@@ -438,9 +509,10 @@ static void open_prefs_window(void) {
     wc.lpfnWndProc = PrefsWndProc;
     wc.hInstance = hInst;
     wc.lpszClassName = cls;
+    wc.hbrBackground = (HBRUSH)(COLOR_3DFACE + 1);
     RegisterClassA(&wc);
 
-    int w = 360, h = 220;
+    int w = 380, h = 380;
     int sx = GetSystemMetrics(SM_CXSCREEN);
     int sy = GetSystemMetrics(SM_CYSCREEN);
     int x = (sx - w) / 2;
@@ -450,55 +522,86 @@ static void open_prefs_window(void) {
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
         x, y, w, h, NULL, NULL, hInst, NULL);
 
-    /* Hotkey label */
-    CreateWindowExA(0, "STATIC", "Hotkey:", WS_CHILD | WS_VISIBLE,
-                    12, 24, 60, 20, g_prefs_window, NULL, hInst, NULL);
-    /* Hotkey edit */
+    int yPos = 20;
+
+    /* Hotkey Group */
+    CreateWindowExA(WS_EX_DLGMODALFRAME, "BUTTON", "Hotkey", 
+                    WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                    15, yPos, 340, 60, g_prefs_window, NULL, hInst, NULL);
+    
+    CreateWindowExA(0, "STATIC", "Global hotkey:", WS_CHILD | WS_VISIBLE,
+                    25, yPos + 25, 80, 20, g_prefs_window, NULL, hInst, NULL);
     g_prefs_hotkey_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", g_config.hotkey,
                     WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                    80, 22, 260, 22, g_prefs_window, (HMENU)IDC_PREF_HOTKEY, hInst, NULL);
-
-    /* Opacity label */
-    CreateWindowExA(0, "STATIC", "Opacity (0-100):", WS_CHILD | WS_VISIBLE,
-                    12, 60, 120, 20, g_prefs_window, NULL, hInst, NULL);
-    char opbuf[32];
-    snprintf(opbuf, sizeof(opbuf), "%d", (int)roundf(g_config.opacity * 100.0f));
-    g_prefs_opacity_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", opbuf,
-                    WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                    140, 58, 80, 22, g_prefs_window, (HMENU)IDC_PREF_OPACITY, hInst, NULL);
-
-    /* Custom size controls */
-    g_prefs_custom_size_check = CreateWindowExA(0, "BUTTON", "Use custom size", 
-                    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                    12, 95, 140, 20, g_prefs_window, (HMENU)IDC_USE_CUSTOM_SIZE, hInst, NULL);
+                    115, yPos + 23, 230, 22, g_prefs_window, (HMENU)IDC_PREF_HOTKEY, hInst, NULL);
     
-    CreateWindowExA(0, "STATIC", "Width (px):", WS_CHILD | WS_VISIBLE,
-                    12, 125, 80, 20, g_prefs_window, NULL, hInst, NULL);
-    char widthbuf[16];
-    snprintf(widthbuf, sizeof(widthbuf), "%d", g_config.custom_width_px);
-    g_prefs_custom_width_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", widthbuf,
-                    WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_NUMBER,
-                    100, 123, 80, 22, g_prefs_window, (HMENU)IDC_CUSTOM_WIDTH, hInst, NULL);
+    yPos += 80;
+
+    /* Scale Group */
+    CreateWindowExA(WS_EX_DLGMODALFRAME, "BUTTON", "Scale", 
+                    WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                    15, yPos, 340, 60, g_prefs_window, NULL, hInst, NULL);
     
-    CreateWindowExA(0, "STATIC", "Height (px):", WS_CHILD | WS_VISIBLE,
-                    190, 125, 80, 20, g_prefs_window, NULL, hInst, NULL);
-    char heightbuf[16];
-    snprintf(heightbuf, sizeof(heightbuf), "%d", g_config.custom_height_px);
-    g_prefs_custom_height_edit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", heightbuf,
-                    WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_NUMBER,
-                    280, 123, 80, 22, g_prefs_window, (HMENU)IDC_CUSTOM_HEIGHT, hInst, NULL);
+    g_scale_label = CreateWindowExA(0, "STATIC", "Scale: 100%", WS_CHILD | WS_VISIBLE,
+                    25, yPos + 20, 120, 20, g_prefs_window, (HMENU)IDC_SCALE_LABEL, hInst, NULL);
+    
+    /* Scale slider: 50% to 200% (values 50-200) */
+    g_scale_slider = CreateWindowExA(0, TRACKBAR_CLASS, NULL,
+                    WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS,
+                    150, yPos + 18, 190, 30, g_prefs_window, (HMENU)IDC_SCALE_SLIDER, hInst, NULL);
+    SendMessage(g_scale_slider, TBM_SETRANGE, TRUE, MAKELONG(50, 200));
+    SendMessage(g_scale_slider, TBM_SETTICFREQ, 25, 0);
+    SendMessage(g_scale_slider, TBM_SETPOS, TRUE, (int)(g_config.scale * 100));
+    
+    yPos += 80;
 
-    /* Set checkbox state and enable/disable fields based on config */
-    SendMessage(g_prefs_custom_size_check, BM_SETCHECK, g_config.use_custom_size ? BST_CHECKED : BST_UNCHECKED, 0);
-    EnableWindow(g_prefs_custom_width_edit, g_config.use_custom_size);
-    EnableWindow(g_prefs_custom_height_edit, g_config.use_custom_size);
+    /* Opacity Group */
+    CreateWindowExA(WS_EX_DLGMODALFRAME, "BUTTON", "Opacity", 
+                    WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                    15, yPos, 340, 60, g_prefs_window, NULL, hInst, NULL);
+    
+    g_opacity_label = CreateWindowExA(0, "STATIC", "Opacity: 85%", WS_CHILD | WS_VISIBLE,
+                    25, yPos + 20, 120, 20, g_prefs_window, (HMENU)IDC_OPACITY_LABEL, hInst, NULL);
+    
+    /* Opacity slider: 10% to 100% (values 10-100) */
+    g_opacity_slider = CreateWindowExA(0, TRACKBAR_CLASS, NULL,
+                    WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS,
+                    150, yPos + 18, 190, 30, g_prefs_window, (HMENU)IDC_OPACITY_SLIDER, hInst, NULL);
+    SendMessage(g_opacity_slider, TBM_SETRANGE, TRUE, MAKELONG(10, 100));
+    SendMessage(g_opacity_slider, TBM_SETTICFREQ, 10, 0);
+    SendMessage(g_opacity_slider, TBM_SETPOS, TRUE, (int)(g_config.opacity * 100));
+    
+    yPos += 80;
 
-    /* OK button */
+    /* Auto-hide Group */
+    CreateWindowExA(WS_EX_DLGMODALFRAME, "BUTTON", "Auto-hide", 
+                    WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+                    15, yPos, 340, 60, g_prefs_window, NULL, hInst, NULL);
+    
+    g_autohide_label = CreateWindowExA(0, "STATIC", "Auto-hide: Off", WS_CHILD | WS_VISIBLE,
+                    25, yPos + 20, 120, 20, g_prefs_window, (HMENU)IDC_AUTOHIDE_LABEL, hInst, NULL);
+    
+    /* Auto-hide slider: Off, 0.5s to 5.0s (values 0-50, where 0=off, 1-50 = 0.1s * value) */
+    g_autohide_slider = CreateWindowExA(0, TRACKBAR_CLASS, NULL,
+                    WS_CHILD | WS_VISIBLE | TBS_HORZ | TBS_AUTOTICKS,
+                    150, yPos + 18, 190, 30, g_prefs_window, (HMENU)IDC_AUTOHIDE_SLIDER, hInst, NULL);
+    SendMessage(g_autohide_slider, TBM_SETRANGE, TRUE, MAKELONG(0, 50));
+    SendMessage(g_autohide_slider, TBM_SETTICFREQ, 10, 0);
+    int autohide_pos = (g_config.auto_hide == 0.0f) ? 0 : (int)(g_config.auto_hide * 10);
+    SendMessage(g_autohide_slider, TBM_SETPOS, TRUE, autohide_pos);
+    
+    yPos += 80;
+
+    /* Update all labels with current values */
+    update_scale_label();
+    update_opacity_label();
+    update_autohide_label();
+
+    /* OK and Cancel buttons */
     CreateWindowExA(0, "BUTTON", "OK", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                    220, 170, 60, 24, g_prefs_window, (HMENU)IDC_PREFS_OK, hInst, NULL);
-    /* Cancel button */
+                    220, yPos + 10, 60, 28, g_prefs_window, (HMENU)IDC_PREFS_OK, hInst, NULL);
     CreateWindowExA(0, "BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                    290, 170, 60, 24, g_prefs_window, (HMENU)IDC_PREFS_CANCEL, hInst, NULL);
+                    290, yPos + 10, 60, 28, g_prefs_window, (HMENU)IDC_PREFS_CANCEL, hInst, NULL);
 
     ShowWindow(g_prefs_window, SW_SHOW);
 }
@@ -520,51 +623,113 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         if (wParam == 1) {
             /* Auto-hide timer expired */
             hide_overlay();
+        } else if (wParam == 2) {
+            /* Preview timer expired */
+            KillTimer(g_hidden_window, 2);
+            if (g_visible) {
+                hide_overlay();
+            }
         }
         break;
         
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case 1: /* Toggle persistent */
-            g_config.persistent = !g_config.persistent;
-            /* Persist change */
-            save_config(&g_config, NULL);
-            if (g_config.persistent && g_visible) hide_overlay();
+        /* Show Keymap toggle */
+        case 101:
+            toggle_overlay();
             break;
-        case 2: /* Toggle invert */
-            g_config.invert = !g_config.invert;
-            /* Persist change */
+        /* Preview Keymap */
+        case 102: {
+            show_overlay();
+            /* Auto-hide preview after 3 seconds */
+            SetTimer(g_hidden_window, 2, 3000, NULL);
+            break;
+        }
+        /* Scale options */
+        case 201: /* 75% */
+            g_config.scale = 0.75f;
+            g_config.use_custom_size = 0;
+            save_config(&g_config, NULL);
+            reload_overlay_with_scale();
+            break;
+        case 202: /* 100% */
+            g_config.scale = 1.0f;
+            g_config.use_custom_size = 0;
+            save_config(&g_config, NULL);
+            reload_overlay_with_scale();
+            break;
+        case 203: /* 125% */
+            g_config.scale = 1.25f;
+            g_config.use_custom_size = 0;
+            save_config(&g_config, NULL);
+            reload_overlay_with_scale();
+            break;
+        case 204: /* 150% */
+            g_config.scale = 1.5f;
+            g_config.use_custom_size = 0;
+            save_config(&g_config, NULL);
+            reload_overlay_with_scale();
+            break;
+        case 205: /* Fit Screen */ {
+            /* Calculate scale to fit 80% of primary monitor width */
+            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+            float targetWidth = screenWidth * 0.8f;
+            if (g_overlay.width > 0) {
+                g_config.scale = targetWidth / g_overlay.width;
+                g_config.use_custom_size = 0;
+                save_config(&g_config, NULL);
+                reload_overlay_with_scale();
+            }
+            break;
+        }
+        /* Opacity options */
+        case 301: /* 50% */
+            g_config.opacity = 0.5f;
             save_config(&g_config, NULL);
             apply_effects(&g_overlay, g_config.opacity, g_config.invert);
             memcpy(g_bitmap_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
             if (g_visible) show_overlay();
             break;
+        case 302: /* 70% */
+            g_config.opacity = 0.7f;
+            save_config(&g_config, NULL);
+            apply_effects(&g_overlay, g_config.opacity, g_config.invert);
+            memcpy(g_bitmap_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+            if (g_visible) show_overlay();
+            break;
+        case 303: /* 85% */
+            g_config.opacity = 0.85f;
+            save_config(&g_config, NULL);
+            apply_effects(&g_overlay, g_config.opacity, g_config.invert);
+            memcpy(g_bitmap_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+            if (g_visible) show_overlay();
+            break;
+        case 304: /* 100% */
+            g_config.opacity = 1.0f;
+            save_config(&g_config, NULL);
+            apply_effects(&g_overlay, g_config.opacity, g_config.invert);
+            memcpy(g_bitmap_bits, g_overlay.data, (size_t)g_overlay.width * g_overlay.height * 4);
+            if (g_visible) show_overlay();
+            break;
+        /* Auto-hide options */
+        case 401: /* Off */
+            g_config.auto_hide = 0.0f;
+            save_config(&g_config, NULL);
+            break;
+        case 402: /* 0.8s */
+            g_config.auto_hide = 0.8f;
+            save_config(&g_config, NULL);
+            break;
+        case 403: /* 2.0s */
+            g_config.auto_hide = 2.0f;
+            save_config(&g_config, NULL);
+            break;
+        case 404: /* Custom... */
+            /* Open preferences for custom auto-hide setting */
+            open_prefs_window();
+            break;
         case 3: /* Quit */
             PostQuitMessage(0);
-            break;
-        case 4: /* Size 50% */
-            g_config.scale = 0.5f;
-            /* Persist change */
-            save_config(&g_config, NULL);
-            reload_overlay_with_scale();
-            break;
-        case 5: /* Size 75% */
-            g_config.scale = 0.75f;
-            /* Persist change */
-            save_config(&g_config, NULL);
-            reload_overlay_with_scale();
-            break;
-        case 6: /* Size 100% */
-            g_config.scale = 1.0f;
-            /* Persist change */
-            save_config(&g_config, NULL);
-            reload_overlay_with_scale();
-            break;
-        case 7: /* Size 150% */
-            g_config.scale = 1.5f;
-            /* Persist change */
-            save_config(&g_config, NULL);
-            reload_overlay_with_scale();
             break;
         }
         break;
@@ -581,6 +746,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmdLine, int nShow) {
+    /* Initialize common controls for trackbar sliders */
+    InitCommonControls();
+    
     /* Per-monitor DPI awareness for crisp rendering (from working example) */
     typedef BOOL (WINAPI *SetPDACTX)(DPI_AWARENESS_CONTEXT);
     HMODULE user32 = GetModuleHandleW(L"user32.dll");

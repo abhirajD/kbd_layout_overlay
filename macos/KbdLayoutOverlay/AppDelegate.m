@@ -9,7 +9,6 @@
 #import "../shared/overlay.h"
 #import "../shared/log.h"
 #import <CommonCrypto/CommonDigest.h>
-#import <IOKit/hid/IOHIDManager.h>
 
 //
 // Lightweight NSWindow subclass used only for instrumentation to log lifecycle events.
@@ -153,61 +152,38 @@
     NSStatusItem *_statusItem;
     Config _config;
     Overlay _overlay;
-    CFMachPortRef _eventTap;
-    CFRunLoopSourceRef _runLoopSource;
-    NSUInteger _targetModifierFlags;
-    NSUInteger _targetKeyCode;
     NSImage *_overlayImage;
     BOOL _visible;
     /* Preferences UI state */
     NSWindow *_prefsWindow;
     HotkeyCaptureField *_prefHotkeyField;
     NSSlider *_prefOpacitySlider;
+    NSTextField *_prefOpacityLabel;
+    NSSlider *_prefScaleSlider;
+    NSTextField *_prefScaleLabel;
     NSButton *_prefUseCustomSizeCheckbox;
     NSTextField *_prefWidthField;
     NSTextField *_prefHeightField;
     NSTextField *_prefErrorLabel;
     NSButton *_prefRestoreDefaultsBtn;
+    NSPopUpButton *_prefAutoHidePopup;
+    NSPopUpButton *_prefPositionPopup;
+    NSButton *_prefClickThroughCheckbox;
+    NSButton *_prefAlwaysOnTopCheckbox;
     /* Preview buffer (reused) so live preview does not mutate original overlay pixels */
     unsigned char *_previewBuffer;
     size_t _previewBufferSize;
     
-    /* State tracking for press-and-hold behavior */
-    BOOL _hotkeyPressed;
-    BOOL _overlayShownByHotkey;
-    
     /* Carbon hotkey registration (reliable, no permissions needed) */
     EventHotKeyRef _carbonHotKey;
     BOOL _carbonHotkeyActive;
+    EventHandlerRef _carbonEventHandlerRef;
+    BOOL _carbonHandlerInstalled;
     NSTimer *_carbonHideTimer;
-    /* HID fallback manager for environments where CGEventTap cannot be created */
-    IOHIDManagerRef _hidManager;
-    BOOL _hidFallbackActive;
-    /* HID-derived modifier mask (synthesized from left/right modifier usages) */
-    CGEventFlags _hidModifierFlags;
-    /* Last non-modifier HID usage seen (for basic debouncing) */
-    uint32_t _hidLastKeyUsage;
+    NSTimer *_autoHideTimer;
 }
 @end
 
-CGEventRef eventTapCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
-    AppDelegate *appDelegate = (__bridge AppDelegate *)refcon;
-    
-    if (type == kCGEventKeyDown || type == kCGEventKeyUp) {
-        CGKeyCode keyCode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
-        CGEventFlags flags = CGEventGetFlags(event);
-        
-        // Filter to only the modifier flags we care about
-        CGEventFlags relevantFlags = flags & (kCGEventFlagMaskCommand | kCGEventFlagMaskAlternate | kCGEventFlagMaskShift | kCGEventFlagMaskControl);
-        
-        // Call back to the app delegate to handle the event
-        BOOL isKeyDown = (type == kCGEventKeyDown);
-        [appDelegate handleCGEventWithKeyCode:keyCode flags:flags filteredFlags:relevantFlags isKeyDown:isKeyDown];
-    }
-    
-    // Return the event unmodified
-    return event;
-}
 
 /* Carbon hotkey event handler - called when global hotkey is pressed */
 static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef theEvent, void *userData) {
@@ -230,30 +206,55 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
 @implementation AppDelegate
 
 /* Handle Carbon hotkey press - called from main queue */
-- (void)handleCarbonHotkeyPressed {
-    // Invalidate any existing hide timer
+- (void)cancelAutoHideTimers {
+    if (_autoHideTimer) {
+        [_autoHideTimer invalidate];
+        _autoHideTimer = nil;
+    }
     if (_carbonHideTimer) {
         [_carbonHideTimer invalidate];
         _carbonHideTimer = nil;
     }
+}
 
-    // Persistent mode: simply toggle without scheduling a timer
-    if ([self isPersistent]) {
+/* Schedule a single-shot auto-hide timer (seconds > 0). Cancels any existing timers first. */
+- (void)scheduleAutoHideForSeconds:(float)secs {
+    [self cancelAutoHideTimers];
+    if (secs <= 0.0f) return;
+    __weak typeof(self) weakSelf = self;
+    _autoHideTimer = [NSTimer scheduledTimerWithTimeInterval:secs repeats:NO block:^(NSTimer * _Nonnull t) {
+        __strong typeof(self) s = weakSelf;
+        if (!s) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [s hideOverlay];
+            s->_autoHideTimer = nil;
+        });
+    }];
+}
+
+/* Handle Carbon hotkey press - unified with auto-hide semantics.
+   - If auto_hide == 0.0 => persistent toggle behavior (legacy)
+   - Else => show overlay and schedule auto-hide after configured seconds
+*/
+- (void)handleCarbonHotkeyPressed {
+    // Cancel any existing timers
+    [self cancelAutoHideTimers];
+
+    float ah = _config.auto_hide;
+    if (ah <= 0.0f) {
+        // Persistent toggle
         if ([_panel isVisible]) {
             [self hideOverlay];
         } else {
             [self showOverlay];
         }
     } else {
-        // Non-persistent: toggle and schedule auto-hide after 0.8s when shown
+        // Timed show
         if ([_panel isVisible]) {
             [self hideOverlay];
         } else {
             [self showOverlay];
-            _carbonHideTimer = [NSTimer scheduledTimerWithTimeInterval:0.8 repeats:NO block:^(NSTimer * _Nonnull t) {
-                [self hideOverlay];
-                _carbonHideTimer = nil;
-            }];
+            [self scheduleAutoHideForSeconds:ah];
         }
     }
 }
@@ -301,8 +302,7 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
         _previewBuffer = NULL;
         _previewBufferSize = 0;
     }
-    /* Tear down HID fallback if active */
-    [self teardownHIDFallback];
+    
     logger_close();
 }
 
@@ -443,7 +443,30 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
 - (void)createOverlayWindow {
     CGFloat scale = [[NSScreen mainScreen] backingScaleFactor];
     NSSize size = NSMakeSize(_overlay.width / scale, _overlay.height / scale);
-    NSRect rect = NSMakeRect(100, 100, size.width, size.height); /* Fixed position for testing */
+    
+    /* Compute initial position based on persisted config */
+    NSScreen *screen = [NSScreen mainScreen];
+    NSRect screenFrame = [screen visibleFrame];
+    NSRect rect = NSMakeRect(0, 0, size.width, size.height);
+    switch (_config.position_mode) {
+        case 0: /* Center */
+            rect.origin.x = NSMidX(screenFrame) - size.width / 2.0;
+            rect.origin.y = NSMidY(screenFrame) - size.height / 2.0;
+            break;
+        case 1: /* Top-Center */
+            rect.origin.x = NSMidX(screenFrame) - size.width / 2.0;
+            rect.origin.y = NSMaxY(screenFrame) - size.height - (_config.position_y);
+            break;
+        case 2: /* Bottom-Center */
+            rect.origin.x = NSMidX(screenFrame) - size.width / 2.0;
+            rect.origin.y = NSMinY(screenFrame) + (_config.position_y);
+            break;
+        case 3: /* Custom */
+        default:
+            rect.origin.x = NSMidX(screenFrame) - size.width / 2.0 + _config.position_x;
+            rect.origin.y = NSMinY(screenFrame) + _config.position_y;
+            break;
+    }
     
     NSLog(@"createOverlayWindow: scale=%.1f size=(%.0fx%.0f) rect=(%.0f,%.0f,%.0fx%.0f)", 
           scale, size.width, size.height, rect.origin.x, rect.origin.y, rect.size.width, rect.size.height);
@@ -455,8 +478,20 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
                                                   defer:NO];
     [_panel setOpaque:NO];
     [_panel setBackgroundColor:[NSColor clearColor]]; /* Transparent background */
-    [_panel setLevel:NSScreenSaverWindowLevel]; /* Float above everything */
-    [_panel setIgnoresMouseEvents:YES];
+    /* Window level follows persisted always_on_top flag */
+    if (_config.always_on_top) {
+        [_panel setLevel:NSScreenSaverWindowLevel];
+    } else {
+        [_panel setLevel:NSNormalWindowLevel];
+    }
+    /* Click-through */
+    if (_config.click_through) {
+        [_panel setIgnoresMouseEvents:YES];
+    } else {
+        [_panel setIgnoresMouseEvents:NO];
+    }
+    /* Opacity */
+    [_panel setAlphaValue:_config.opacity];
     [_panel setHasShadow:NO];
     
     /* Set proper collection behavior for multi-space support */
@@ -566,37 +601,6 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
    HID events are visible to the process when CGEventTap cannot be created.
 */
 
-/* Helper: map common HID keyboard usages (USB HID usage IDs) to mac CGKeyCode values.
-   This mapping is intentionally minimal — extend as needed. USB HID usage for 'a'==4.
-*/
-static CGKeyCode hidUsageToCGKeyCode(uint32_t usage) {
-    // Letters: usage 4 -> 'A', 5 -> 'B', ...
-    if (usage >= 4 && usage <= 29) { // a..z (4..29)
-        // Map letters to mac keycodes (QWERTY)
-        static const CGKeyCode letterMap[26] = {
-            0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6
-        };
-        return letterMap[usage - 4];
-    }
-
-    // Numbers (top row): usage 30..39 -> 1..0
-    if (usage >= 30 && usage <= 39) {
-        static const CGKeyCode numMap[10] = {
-            18,19,20,21,23,22,26,28,25,29
-        };
-        return numMap[usage - 30];
-    }
-
-    // Special keys
-    switch (usage) {
-        case 44: return 44; /* Slash -> kVK_ANSI_Slash (already 44 in our mapping) */
-        case 40: return 41; /* Semicolon usage (HID 51?) best-effort fallback */
-        case 57: return 49; /* Space usage */
-        case 40 + 8: /* Return/Enter common HID id can vary */ return 36;
-        default:
-            return (CGKeyCode)NSNotFound;
-    }
-}
 
 /* Update synthesized modifier mask from HID modifier usages (0xE0 - 0xE7).
    Left/Right mapping:
@@ -609,151 +613,17 @@ static CGKeyCode hidUsageToCGKeyCode(uint32_t usage) {
      0xE6 = RightAlt     -> kCGEventFlagMaskAlternate
      0xE7 = RightGUI     -> kCGEventFlagMaskCommand
 */
-static void handleHIDModifier(AppDelegate *self, uint32_t usage, CFIndex pressed) {
-    if (!self) return;
-    CGEventFlags mask = 0;
-    if (usage >= 0xE0 && usage <= 0xE7) {
-        switch (usage) {
-            case 0xE0: case 0xE4: mask = kCGEventFlagMaskControl; break;
-            case 0xE1: case 0xE5: mask = kCGEventFlagMaskShift; break;
-            case 0xE2: case 0xE6: mask = kCGEventFlagMaskAlternate; break;
-            case 0xE3: case 0xE7: mask = kCGEventFlagMaskCommand; break;
-            default: mask = 0; break;
-        }
-        if (pressed) {
-            self->_hidModifierFlags |= mask;
-        } else {
-            self->_hidModifierFlags &= ~mask;
-        }
-        logger_log("IOHID: modifier usage=0x%02x pressed=%d mask=0x%llx", usage, (int)pressed, (unsigned long long)self->_hidModifierFlags);
-    }
-}
 
 /* Convert HID event into the existing CGEvent-style handler so we can reuse hotkey logic.
    For non-modifier keys we synthesize filteredFlags from _hidModifierFlags and call
    handleCGEventWithKeyCode:flags:filteredFlags:isKeyDown:
 */
-static void handleHIDKeyEvent(AppDelegate *self, uint32_t usage, CFIndex value) {
-    if (!self) return;
-    // Detect modifier usages first
-    if (usage >= 0xE0 && usage <= 0xE7) {
-        handleHIDModifier(self, usage, value > 0);
-        return;
-    }
-
-    // Map HID usage to mac CGKeyCode
-    CGKeyCode keyCode = hidUsageToCGKeyCode(usage);
-    if (keyCode == (CGKeyCode)NSNotFound) {
-        logger_log("IOHID: unmapped HID usage %u (ignoring)", usage);
-        return;
-    }
-
-    // Use the synthesized modifier mask as filteredFlags (subset matching)
-    CGEventFlags filteredFlags = self->_hidModifierFlags;
-    BOOL isKeyDown = (value > 0);
-
-    // Call into the same handler used by CGEventTap
-    [self handleCGEventWithKeyCode:keyCode flags:filteredFlags filteredFlags:filteredFlags isKeyDown:isKeyDown];
-
-    // Store last usage for basic debouncing / diagnostics
-    self->_hidLastKeyUsage = usage;
-}
 
 /* IOHID callback now converts HID usages into synthesized modifier state and key events */
-static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHIDValueRef value) {
-    AppDelegate *self = (__bridge AppDelegate *)context;
-    if (!value || !self) return;
-    IOHIDElementRef elem = IOHIDValueGetElement(value);
-    if (!elem) return;
-    uint32_t usagePage = IOHIDElementGetUsagePage(elem);
-    uint32_t usage = IOHIDElementGetUsage(elem);
-    CFIndex intValue = IOHIDValueGetIntegerValue(value);
 
-    // Only handle keyboard usage page
-    if (usagePage != 0x07) {
-        return;
-    }
 
-    // Log for diagnostics
-    logger_log("IOHID: keyboard usage=%u value=%ld", (unsigned)usage, (long)intValue);
-
-    // Handle modifier and key events
-    handleHIDKeyEvent(self, usage, intValue);
-}
-
-- (void)setupHIDFallback {
-    if (_hidManager) return;
-    _hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
-    if (!_hidManager) {
-        logger_log("setupHIDFallback: IOHIDManagerCreate failed");
-        return;
-    }
-
-    // Match keyboard usage page (0x07). Usage 0 means "any".
-    CFNumberRef page = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, (int[]){0x07});
-    CFNumberRef usageAny = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, (int[]){0});
-    CFMutableDictionaryRef dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
-                                                            &kCFTypeDictionaryKeyCallBacks,
-                                                            &kCFTypeDictionaryValueCallBacks);
-    CFDictionarySetValue(dict, CFSTR(kIOHIDDeviceUsagePageKey), page);
-    CFDictionarySetValue(dict, CFSTR(kIOHIDDeviceUsageKey), usageAny);
-
-    IOHIDManagerSetDeviceMatching(_hidManager, dict);
-    IOHIDManagerRegisterInputValueCallback(_hidManager, HIDInputCallback, (__bridge void *)self);
-    IOHIDManagerScheduleWithRunLoop(_hidManager, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
-    IOReturn r = IOHIDManagerOpen(_hidManager, kIOHIDOptionsTypeNone);
-    if (r == kIOReturnSuccess) {
-        _hidFallbackActive = YES;
-        logger_log("setupHIDFallback: IOHIDManager opened successfully");
-    } else {
-        logger_log("setupHIDFallback: IOHIDManagerOpen failed: 0x%x", r);
-    }
-
-    if (page) CFRelease(page);
-    if (usageAny) CFRelease(usageAny);
-    if (dict) CFRelease(dict);
-}
-
-- (void)teardownHIDFallback {
-    if (!_hidManager) return;
-    IOHIDManagerUnscheduleFromRunLoop(_hidManager, CFRunLoopGetCurrent(), kCFRunLoopCommonModes);
-    IOHIDManagerRegisterInputValueCallback(_hidManager, NULL, NULL);
-    IOHIDManagerClose(_hidManager, kIOHIDOptionsTypeNone);
-    CFRelease(_hidManager);
-    _hidManager = NULL;
-    _hidFallbackActive = NO;
-}
 
 /* Existing event handler (unchanged) */
-- (void)handleCGEventWithKeyCode:(CGKeyCode)keyCode flags:(CGEventFlags)flags filteredFlags:(CGEventFlags)filteredFlags isKeyDown:(BOOL)isKeyDown {
-    // Check if this matches our target hotkey with subset matching
-    BOOL keyMatches = (keyCode == _targetKeyCode);
-    BOOL modifiersMatch = (filteredFlags & _targetModifierFlags) == _targetModifierFlags;
-    
-    if (keyMatches && modifiersMatch) {
-        if (isKeyDown && !_hotkeyPressed) {
-            // Key pressed: show overlay and mark state
-            logger_log("CGEventTap: Hotkey pressed - showing overlay");
-            _hotkeyPressed = YES;
-            _overlayShownByHotkey = YES;
-            
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self showOverlay];
-            });
-        }
-    } else if (_hotkeyPressed && (!modifiersMatch || (keyMatches && !isKeyDown))) {
-        // Key released or modifiers changed: hide overlay if shown by hotkey
-        logger_log("CGEventTap: Hotkey released - hiding overlay");
-        _hotkeyPressed = NO;
-        
-        if (_overlayShownByHotkey && ![self isPersistent]) {
-            _overlayShownByHotkey = NO;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self hideOverlay];
-            });
-        }
-    }
-}
 
 - (NSEventModifierFlags)parseModifierFlags:(NSString *)hotkeyString {
     NSEventModifierFlags flags = 0;
@@ -775,25 +645,6 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
     return flags;
 }
 
-- (CGEventFlags)parseCGModifierFlags:(NSString *)hotkeyString {
-    CGEventFlags flags = 0;
-    if ([hotkeyString localizedCaseInsensitiveContainsString:@"Command"] || 
-        [hotkeyString localizedCaseInsensitiveContainsString:@"Cmd"]) {
-        flags |= kCGEventFlagMaskCommand;
-    }
-    if ([hotkeyString localizedCaseInsensitiveContainsString:@"Option"] || 
-        [hotkeyString localizedCaseInsensitiveContainsString:@"Alt"]) {
-        flags |= kCGEventFlagMaskAlternate;
-    }
-    if ([hotkeyString localizedCaseInsensitiveContainsString:@"Shift"]) {
-        flags |= kCGEventFlagMaskShift;
-    }
-    if ([hotkeyString localizedCaseInsensitiveContainsString:@"Control"] || 
-        [hotkeyString localizedCaseInsensitiveContainsString:@"Ctrl"]) {
-        flags |= kCGEventFlagMaskControl;
-    }
-    return flags;
-}
 
 - (NSUInteger)parseKeyCode:(NSString *)hotkeyString {
     /* Extract the key name (last component after '+') */
@@ -854,117 +705,8 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
         return;
     }
 
-    NSString *hk = [NSString stringWithUTF8String:_config.hotkey];
-    if (!hk) hk = @"";
-    NSLog(@"registerHotkey: attempting to register hotkey string: '%@'", hk);
-
-    /* Basic validation: require at least one modifier to avoid accidental single-key triggers */
-    BOOL hasModifier = ([hk localizedCaseInsensitiveContainsString:@"Command"] ||
-                        [hk localizedCaseInsensitiveContainsString:@"Option"] ||
-                        [hk localizedCaseInsensitiveContainsString:@"Shift"] ||
-                        [hk localizedCaseInsensitiveContainsString:@"Control"]);
-    if (![hk length] || !hasModifier) {
-        NSLog(@"registerHotkey: invalid or modifier-less hotkey '%@' - skipping registration", hk);
-        return;
-    }
-
-    /* Parse the hotkey string into CGEvent modifier flags and key code */
-    CGEventFlags modifierFlags = [self parseCGModifierFlags:hk];
-    CGKeyCode keyCode = [self parseKeyCode:hk];
-    
-    if (modifierFlags == 0 || keyCode == NSNotFound) {
-        NSLog(@"registerHotkey: failed to parse hotkey '%@' - skipping registration", hk);
-        return;
-    }
-
-    /* Remove existing event tap if present */
-    if (_eventTap) {
-        CGEventTapEnable(_eventTap, false);
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), _runLoopSource, kCFRunLoopCommonModes);
-        CFRelease(_runLoopSource);
-        CFRelease(_eventTap);
-        _eventTap = NULL;
-        _runLoopSource = NULL;
-    }
-
-    /* Store the target combination for comparison */
-    _targetModifierFlags = modifierFlags;
-    _targetKeyCode = keyCode;
-
-    /* Create CGEventTap to monitor key events */
-    _eventTap = CGEventTapCreate(
-        kCGSessionEventTap,
-        kCGHeadInsertEventTap,
-        kCGEventTapOptionDefault,
-        CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp),
-        eventTapCallback,
-        (__bridge void *)self
-    );
-
-    if (_eventTap) {
-        _runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, _eventTap, 0);
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), _runLoopSource, kCFRunLoopCommonModes);
-        CGEventTapEnable(_eventTap, true);
-        
-        NSLog(@"Successfully registered CGEventTap hotkey monitor: %@ (modifierFlags=0x%llx keyCode=%d)", 
-              hk, (unsigned long long)modifierFlags, keyCode);
-        logger_log("Successfully registered CGEventTap hotkey monitor: %s modifierFlags=0x%llx keyCode=%d", [hk UTF8String], (unsigned long long)modifierFlags, keyCode);
-    } else {
-        NSLog(@"Failed to create CGEventTap for hotkey: %@", hk);
-        logger_log("Failed to create CGEventTap for hotkey: %s", [hk UTF8String]);
-
-        /* Diagnostic info to help troubleshoot TCC/permission issues */
-        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier] ?: @"(unknown)";
-        NSString *bundlePath = [[NSBundle mainBundle] bundlePath] ?: @"(unknown)";
-        NSString *version = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleShortVersionString"] ?: @"(unknown)";
-        logger_log("CGEventTap diagnostic: bundlePath=%s bundleID=%s version=%s",
-                   [bundlePath UTF8String], [bundleID UTF8String], [version UTF8String]);
-        NSLog(@"CGEventTap diagnostic: bundlePath=%@ bundleID=%@ version=%@", bundlePath, bundleID, version);
-
-        /* Additional runtime diagnostics to aid debugging */
-        BOOL accessibilityTrusted = AXIsProcessTrusted();
-        NSDictionary *axOptions = @{(__bridge id)kAXTrustedCheckOptionPrompt: @NO};
-        BOOL accessibilityTrustedNoPrompt = AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)axOptions);
-        logger_log("AXIsProcessTrusted=%d AXIsProcessTrustedWithOptionsNoPrompt=%d", accessibilityTrusted, accessibilityTrustedNoPrompt);
-        NSLog(@"AXIsProcessTrusted=%d AXIsProcessTrustedWithOptionsNoPrompt=%d", accessibilityTrusted, accessibilityTrustedNoPrompt);
-
-        /* Log codesign and executable info (codesign output + sha256) */
-        [self logCodesignAndExecutableInfo];
-
-        /* Try a listen-only event tap as a fallback (useful to distinguish TCC denials from other failures) */
-        CFMachPortRef listenTap = CGEventTapCreate(
-            kCGSessionEventTap,
-            kCGHeadInsertEventTap,
-            kCGEventTapOptionListenOnly,
-            CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp),
-            eventTapCallback,
-            (__bridge void *)self
-        );
-
-        if (listenTap) {
-            CFRunLoopSourceRef listenSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, listenTap, 0);
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), listenSource, kCFRunLoopCommonModes);
-            CGEventTapEnable(listenTap, true);
-            logger_log("Fallback: successfully created listen-only CGEventTap (may indicate permission restrictions on non-listen taps)");
-            NSLog(@"Fallback: created listen-only tap=%p (note: listen-only cannot modify events)", listenTap);
-            /* Keep listenTap around briefly to observe behavior then release */
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                if (listenTap) {
-                    CGEventTapEnable(listenTap, false);
-                    CFRunLoopRemoveSource(CFRunLoopGetCurrent(), listenSource, kCFRunLoopCommonModes);
-                    CFRelease(listenSource);
-                    CFRelease(listenTap);
-                }
-            });
-        } else {
-            logger_log("Fallback listen-only CGEventTap creation also failed");
-            NSLog(@"Fallback listen-only CGEventTap creation also failed");
-        }
-
-        /* Offer the user direct links to the relevant privacy panes (Input Monitoring and Accessibility) */
-        [self setupHIDFallback];
-        [self promptOpenPrivacyPanes];
-    }
+    /* Use Carbon as the primary, reliable hotkey mechanism */
+    [self registerCarbonHotkey];
 }
 
 /* Register Carbon hotkey - proven approach based on working example */
@@ -1024,8 +766,12 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
     
     /* Install Carbon event handler - following working example pattern */
     EventTypeSpec eventType = { kEventClassKeyboard, kEventHotKeyPressed };
-    InstallEventHandler(GetApplicationEventTarget(), CarbonHotkeyHandler, 1, &eventType, 
-                       (__bridge void *)self, NULL);
+    if (!_carbonHandlerInstalled) {
+        InstallEventHandler(GetApplicationEventTarget(), CarbonHotkeyHandler, 1, &eventType,
+                           (__bridge void *)self, &_carbonEventHandlerRef);
+        _carbonHandlerInstalled = YES;
+        logger_log("Carbon event handler installed");
+    }
     
     /* Register the hotkey with system event target */
     EventHotKeyID hotKeyID = { 'KLOH', 1 };
@@ -1050,20 +796,15 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
         _carbonHotkeyActive = NO;
         logger_log("Carbon hotkey unregistered");
     }
+    if (_carbonHandlerInstalled && _carbonEventHandlerRef) {
+        RemoveEventHandler(_carbonEventHandlerRef);
+        _carbonEventHandlerRef = NULL;
+        _carbonHandlerInstalled = NO;
+        logger_log("Carbon event handler removed");
+    }
 }
 
 /* Unregister the current hotkey if present */
-- (void)unregisterCurrentHotkey {
-    if (_eventTap) {
-        NSLog(@"unregisterCurrentHotkey: disabling CGEventTap");
-        CGEventTapEnable(_eventTap, false);
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), _runLoopSource, kCFRunLoopCommonModes);
-        CFRelease(_runLoopSource);
-        CFRelease(_eventTap);
-        _eventTap = NULL;
-        _runLoopSource = NULL;
-    }
-}
 
 /* Basic hotkey string validation used by prefs before attempting registration */
 - (BOOL)isValidHotkeyString:(NSString *)hk {
@@ -1091,65 +832,116 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
 - (NSMenu *)buildMenu {
     NSMenu *menu = [[NSMenu alloc] init];
     
-    /* Test overlay display */
-    NSMenuItem *showOverlayItem = [[NSMenuItem alloc] initWithTitle:@"Show Overlay (Test)" 
-                                                             action:@selector(testShowOverlay:) 
-                                                      keyEquivalent:@""];
-    [showOverlayItem setTarget:self];
-    [menu addItem:showOverlayItem];
-    
-    [menu addItem:[NSMenuItem separatorItem]];
-    
-    NSMenuItem *persistentItem = [[NSMenuItem alloc] initWithTitle:@"Persistent mode" 
-                                                            action:@selector(togglePersistent:) 
+    /* Show Keymap toggle with state indicator */
+    NSMenuItem *showKeymapItem = [[NSMenuItem alloc] initWithTitle:@"Show Keymap" 
+                                                            action:@selector(toggleShowKeymap:) 
                                                      keyEquivalent:@""];
-    [persistentItem setTarget:self];
-    [persistentItem setState:_config.persistent ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:persistentItem];
-    
-    NSMenuItem *invertItem = [[NSMenuItem alloc] initWithTitle:@"Invert colors" 
-                                                        action:@selector(toggleInvert:) 
-                                                 keyEquivalent:@""];
-    [invertItem setTarget:self];
-    [invertItem setState:_config.invert ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:invertItem];
+    [showKeymapItem setTarget:self];
+    [showKeymapItem setState:_visible ? NSControlStateValueOn : NSControlStateValueOff];
+    [menu addItem:showKeymapItem];
     
     [menu addItem:[NSMenuItem separatorItem]];
     
-    /* Size options */
-    NSMenuItem *size50Item = [[NSMenuItem alloc] initWithTitle:@"Size: 50%" action:@selector(setSize50:) keyEquivalent:@""];
-    [size50Item setTarget:self];
-    [size50Item setState:(_config.scale == 0.5f) ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:size50Item];
+    /* Scale submenu */
+    NSMenuItem *scaleParent = [[NSMenuItem alloc] initWithTitle:@"Scale" action:nil keyEquivalent:@""];
+    NSMenu *scaleMenu = [[NSMenu alloc] initWithTitle:@"Scale"];
     
-    NSMenuItem *size75Item = [[NSMenuItem alloc] initWithTitle:@"Size: 75%" action:@selector(setSize75:) keyEquivalent:@""];
-    [size75Item setTarget:self];
-    [size75Item setState:(_config.scale == 0.75f) ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:size75Item];
+    NSMenuItem *scale75 = [[NSMenuItem alloc] initWithTitle:@"75%" action:@selector(setSize75:) keyEquivalent:@""];
+    [scale75 setTarget:self];
+    [scale75 setState:(fabsf(_config.scale - 0.75f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [scaleMenu addItem:scale75];
     
-    NSMenuItem *size100Item = [[NSMenuItem alloc] initWithTitle:@"Size: 100%" action:@selector(setSize100:) keyEquivalent:@""];
-    [size100Item setTarget:self];
-    [size100Item setState:(_config.scale == 1.0f) ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:size100Item];
+    NSMenuItem *scale100 = [[NSMenuItem alloc] initWithTitle:@"100%" action:@selector(setSize100:) keyEquivalent:@""];
+    [scale100 setTarget:self];
+    [scale100 setState:(fabsf(_config.scale - 1.0f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [scaleMenu addItem:scale100];
     
-    NSMenuItem *size150Item = [[NSMenuItem alloc] initWithTitle:@"Size: 150%" action:@selector(setSize150:) keyEquivalent:@""];
-    [size150Item setTarget:self];
-    [size150Item setState:(_config.scale == 1.5f) ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:size150Item];
+    NSMenuItem *scale125 = [[NSMenuItem alloc] initWithTitle:@"125%" action:@selector(setSize125:) keyEquivalent:@""];
+    [scale125 setTarget:self];
+    [scale125 setState:(fabsf(_config.scale - 1.25f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [scaleMenu addItem:scale125];
     
-    /* Custom pixel size indicator (opens Preferences) */
-    NSString *customTitle = [NSString stringWithFormat:@"Size: custom %dx%d", _config.custom_width_px, _config.custom_height_px];
-    NSMenuItem *customItem = [[NSMenuItem alloc] initWithTitle:customTitle action:@selector(openPreferences:) keyEquivalent:@""];
-    [customItem setTarget:self];
-    [customItem setState:_config.use_custom_size ? NSControlStateValueOn : NSControlStateValueOff];
-    [menu addItem:customItem];
+    NSMenuItem *scale150 = [[NSMenuItem alloc] initWithTitle:@"150%" action:@selector(setSize150:) keyEquivalent:@""];
+    [scale150 setTarget:self];
+    [scale150 setState:(fabsf(_config.scale - 1.5f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [scaleMenu addItem:scale150];
+    
+    NSMenuItem *scaleFitScreen = [[NSMenuItem alloc] initWithTitle:@"Fit Screen" action:@selector(setSizeFitScreen:) keyEquivalent:@""];
+    [scaleFitScreen setTarget:self];
+    [scaleFitScreen setState:(_config.use_custom_size && _config.scale > 1.9f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [scaleMenu addItem:scaleFitScreen];
+    
+    [scaleParent setSubmenu:scaleMenu];
+    [menu addItem:scaleParent];
+    
+    /* Opacity submenu */
+    NSMenuItem *opacityParent = [[NSMenuItem alloc] initWithTitle:@"Opacity" action:nil keyEquivalent:@""];
+    NSMenu *opacityMenu = [[NSMenu alloc] initWithTitle:@"Opacity"];
+    
+    NSMenuItem *opacity50 = [[NSMenuItem alloc] initWithTitle:@"50%" action:@selector(setOpacity50:) keyEquivalent:@""];
+    [opacity50 setTarget:self];
+    [opacity50 setState:(fabsf(_config.opacity - 0.5f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [opacityMenu addItem:opacity50];
+    
+    NSMenuItem *opacity70 = [[NSMenuItem alloc] initWithTitle:@"70%" action:@selector(setOpacity70:) keyEquivalent:@""];
+    [opacity70 setTarget:self];
+    [opacity70 setState:(fabsf(_config.opacity - 0.7f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [opacityMenu addItem:opacity70];
+    
+    NSMenuItem *opacity85 = [[NSMenuItem alloc] initWithTitle:@"85%" action:@selector(setOpacity85:) keyEquivalent:@""];
+    [opacity85 setTarget:self];
+    [opacity85 setState:(fabsf(_config.opacity - 0.85f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [opacityMenu addItem:opacity85];
+    
+    NSMenuItem *opacity100 = [[NSMenuItem alloc] initWithTitle:@"100%" action:@selector(setOpacity100:) keyEquivalent:@""];
+    [opacity100 setTarget:self];
+    [opacity100 setState:(fabsf(_config.opacity - 1.0f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [opacityMenu addItem:opacity100];
+    
+    [opacityParent setSubmenu:opacityMenu];
+    [menu addItem:opacityParent];
+    
+    /* Auto-hide submenu */
+    NSMenuItem *autoHideParent = [[NSMenuItem alloc] initWithTitle:@"Auto-hide" action:nil keyEquivalent:@""];
+    NSMenu *autoHideMenu = [[NSMenu alloc] initWithTitle:@"Auto-hide"];
+    
+    NSMenuItem *ahOff = [[NSMenuItem alloc] initWithTitle:@"Off" action:@selector(setAutoHideOff:) keyEquivalent:@""];
+    [ahOff setTarget:self];
+    [ahOff setState:(_config.auto_hide == 0.0f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [autoHideMenu addItem:ahOff];
+    
+    NSMenuItem *ah08 = [[NSMenuItem alloc] initWithTitle:@"0.8s" action:@selector(setAutoHide08:) keyEquivalent:@""];
+    [ah08 setTarget:self];
+    [ah08 setState:(fabsf(_config.auto_hide - 0.8f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [autoHideMenu addItem:ah08];
+    
+    NSMenuItem *ah2 = [[NSMenuItem alloc] initWithTitle:@"2.0s" action:@selector(setAutoHide2s:) keyEquivalent:@""];
+    [ah2 setTarget:self];
+    [ah2 setState:(fabsf(_config.auto_hide - 2.0f) < 0.001f) ? NSControlStateValueOn : NSControlStateValueOff];
+    [autoHideMenu addItem:ah2];
+    
+    NSMenuItem *ahCustom = [[NSMenuItem alloc] initWithTitle:@"Custom..." action:@selector(openPreferences:) keyEquivalent:@""];
+    [ahCustom setTarget:self];
+    [autoHideMenu addItem:ahCustom];
+    
+    [autoHideParent setSubmenu:autoHideMenu];
+    [menu addItem:autoHideParent];
+    
+    [menu addItem:[NSMenuItem separatorItem]];
+    
+    /* Preview Keymap */
+    NSMenuItem *previewItem = [[NSMenuItem alloc] initWithTitle:@"Preview Keymap" 
+                                                         action:@selector(previewKeymap:) 
+                                                  keyEquivalent:@""];
+    [previewItem setTarget:self];
+    [menu addItem:previewItem];
+    
+    [menu addItem:[NSMenuItem separatorItem]];
     
     /* Preferences */
     NSMenuItem *prefsItem = [[NSMenuItem alloc] initWithTitle:@"Preferences..." action:@selector(openPreferences:) keyEquivalent:@","];
     [prefsItem setTarget:self];
     [menu addItem:prefsItem];
-    
-    [menu addItem:[NSMenuItem separatorItem]];
     
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit" 
                                                       action:@selector(quit:) 
@@ -1230,16 +1022,24 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
     });
 }
 
-- (void)togglePersistent:(id)sender {
-    _config.persistent = !_config.persistent;
-    [sender setState:_config.persistent ? NSControlStateValueOn : NSControlStateValueOff];
-    
-    /* Persist change */
+- (void)setAutoHideOff:(id)sender {
+    _config.auto_hide = 0.0f;
+    /* keep legacy flag for migration parity */
+    _config.persistent = 1;
     save_config(&_config, NULL);
-    
-    if (_config.persistent && _visible) {
-        [self hideOverlay];
-    }
+    _statusItem.menu = [self buildMenu];
+}
+- (void)setAutoHide08:(id)sender {
+    _config.auto_hide = 0.8f;
+    _config.persistent = 0;
+    save_config(&_config, NULL);
+    _statusItem.menu = [self buildMenu];
+}
+- (void)setAutoHide2s:(id)sender {
+    _config.auto_hide = 2.0f;
+    _config.persistent = 0;
+    save_config(&_config, NULL);
+    _statusItem.menu = [self buildMenu];
 }
 
 - (void)toggleInvert:(id)sender {
@@ -1264,8 +1064,37 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
     [self setSizeScale:1.0f sender:sender];
 }
 
+- (void)setSize125:(id)sender {
+    [self setSizeScale:1.25f sender:sender];
+}
+
 - (void)setSize150:(id)sender {
     [self setSizeScale:1.5f sender:sender];
+}
+
+- (void)setSizeFitScreen:(id)sender {
+    /* Calculate scale to fit screen width */
+    NSScreen *screen = [NSScreen mainScreen];
+    CGFloat screenWidth = screen.frame.size.width;
+    CGFloat targetWidth = screenWidth * 0.8f; // 80% of screen width
+    
+    if (_overlay.width > 0) {
+        float fitScale = targetWidth / _overlay.width;
+        _config.scale = fitScale;
+        _config.use_custom_size = 0; // Use scale mode
+        
+        save_config(&_config, NULL);
+        
+        /* Reload overlay with new scale */
+        free_overlay(&_overlay);
+        [self loadOverlay];
+        [self createOverlayWindow];
+        
+        /* Update menu checkmarks */
+        _statusItem.menu = [self buildMenu];
+        
+        NSLog(@"Fit screen: scale %.1f%% (%.0fx%.0f)", fitScale * 100, _overlay.width * fitScale, _overlay.height * fitScale);
+    }
 }
 
 - (void)setSizeScale:(float)scale sender:(id)sender {
@@ -1285,6 +1114,59 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
     NSLog(@"Changed scale to %.0f%%", scale * 100);
 }
 
+/* Opacity action methods */
+- (void)setOpacity50:(id)sender {
+    [self setOpacityValue:0.5f];
+}
+
+- (void)setOpacity70:(id)sender {
+    [self setOpacityValue:0.7f];
+}
+
+- (void)setOpacity85:(id)sender {
+    [self setOpacityValue:0.85f];
+}
+
+- (void)setOpacity100:(id)sender {
+    [self setOpacityValue:1.0f];
+}
+
+- (void)setOpacityValue:(float)opacity {
+    _config.opacity = opacity;
+    save_config(&_config, NULL);
+    [self updateOverlayImage];
+    _statusItem.menu = [self buildMenu];
+    NSLog(@"Changed opacity to %.0f%%", opacity * 100);
+}
+
+/* Toggle Show Keymap - persistent visibility control */
+- (void)toggleShowKeymap:(id)sender {
+    if (_visible) {
+        [self hideOverlay];
+    } else {
+        [self showOverlay];
+        /* If not in persistent mode (auto_hide > 0), schedule hide timer */
+        if (_config.auto_hide > 0.0f && _carbonHideTimer == nil) {
+            _carbonHideTimer = [NSTimer scheduledTimerWithTimeInterval:_config.auto_hide repeats:NO block:^(NSTimer * _Nonnull t) {
+                [self hideOverlay];
+                _carbonHideTimer = nil;
+            }];
+        }
+    }
+    _statusItem.menu = [self buildMenu]; // Update checkmark
+}
+
+/* Preview Keymap - temporary show for testing */
+- (void)previewKeymap:(id)sender {
+    [self showOverlay];
+    /* Always auto-hide preview after 3 seconds regardless of settings */
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (_visible) {
+            [self hideOverlay];
+        }
+    });
+}
+
 /* Preferences UI - minimal and local (opacity + hotkey text). Hotkey changes require restart to activate in this MVP. */
 
 - (void)openPreferences:(id)sender {
@@ -1295,117 +1177,220 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
         return;
     }
 
-    NSRect rect = NSMakeRect(0, 0, 360, 160);
+    const CGFloat winW = 480.0f;
+    const CGFloat winH = 520.0f;
+    NSRect rect = NSMakeRect(0, 0, winW, winH);
     _prefsWindow = [[LoggingWindow alloc] initWithContentRect:rect
-                                               styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
-                                                 backing:NSBackingStoreBuffered
-                                                   defer:NO];
+                                                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
+                                                    backing:NSBackingStoreBuffered
+                                                      defer:NO];
     NSLog(@"openPreferences: created prefs window %p", _prefsWindow);
     [_prefsWindow setTitle:@"Preferences"];
-    /* Ensure we receive windowWillClose: notifications so we can clear references safely */
     [_prefsWindow setDelegate:self];
-    
+
     NSView *content = [_prefsWindow contentView];
+    content.wantsLayer = YES;
+
+    /* Helper functions for consistent UI elements */
+    NSTextField *(^makeLabel)(NSString *) = ^NSTextField*(NSString *txt) {
+        NSTextField *l = [[NSTextField alloc] initWithFrame:NSZeroRect];
+        [l setStringValue:txt];
+        [l setBezeled:NO];
+        [l setDrawsBackground:NO];
+        [l setEditable:NO];
+        [l setSelectable:NO];
+        l.translatesAutoresizingMaskIntoConstraints = NO;
+        return l;
+    };
     
-    /* Opacity label */
-    NSTextField *opacityLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(12, 110, 80, 24)];
-    [opacityLabel setStringValue:@"Opacity:"];
-    [opacityLabel setBezeled:NO];
-    [opacityLabel setDrawsBackground:NO];
-    [opacityLabel setEditable:NO];
-    [opacityLabel setSelectable:NO];
-    [content addSubview:opacityLabel];
+    NSBox *(^makeGroupBox)(NSString *) = ^NSBox*(NSString *title) {
+        NSBox *box = [[NSBox alloc] initWithFrame:NSZeroRect];
+        box.boxType = NSBoxPrimary;
+        box.title = title;
+        box.titlePosition = NSAtTop;
+        box.translatesAutoresizingMaskIntoConstraints = NO;
+        return box;
+    };
+
+    /* === OVERLAY SECTION === */
+    NSBox *overlayBox = makeGroupBox(@"Overlay");
+    [content addSubview:overlayBox];
+    NSView *overlayContent = [[NSView alloc] init];
+    [overlayBox setContentView:overlayContent];
     
-    /* Opacity slider */
-    _prefOpacitySlider = [[NSSlider alloc] initWithFrame:NSMakeRect(100, 110, 240, 24)];
-    [_prefOpacitySlider setMinValue:0.0];
+    /* Scale slider with percentage display */
+    NSTextField *scaleLabel = makeLabel(@"Scale:");
+    _prefScaleSlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
+    _prefScaleSlider.translatesAutoresizingMaskIntoConstraints = NO;
+    [_prefScaleSlider setMinValue:0.5];
+    [_prefScaleSlider setMaxValue:1.5];
+    [_prefScaleSlider setDoubleValue:_config.scale];
+    [_prefScaleSlider setTarget:self];
+    [_prefScaleSlider setAction:@selector(prefScaleChanged:)];
+    
+    _prefScaleLabel = makeLabel([NSString stringWithFormat:@"%.0f%%", _config.scale * 100]);
+    _prefScaleLabel.textColor = [NSColor secondaryLabelColor];
+    
+    [overlayContent addSubview:scaleLabel];
+    [overlayContent addSubview:_prefScaleSlider];
+    [overlayContent addSubview:_prefScaleLabel];
+    
+    /* Opacity slider with percentage display */
+    NSTextField *opacityLabel = makeLabel(@"Opacity:");
+    _prefOpacitySlider = [[NSSlider alloc] initWithFrame:NSZeroRect];
+    _prefOpacitySlider.translatesAutoresizingMaskIntoConstraints = NO;
+    [_prefOpacitySlider setMinValue:0.3];
     [_prefOpacitySlider setMaxValue:1.0];
     [_prefOpacitySlider setDoubleValue:_config.opacity];
     [_prefOpacitySlider setTarget:self];
     [_prefOpacitySlider setAction:@selector(prefOpacityChanged:)];
-    [content addSubview:_prefOpacitySlider];
     
-    /* Hotkey label */
-    NSTextField *hotkeyLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(12, 70, 80, 24)];
-    [hotkeyLabel setStringValue:@"Hotkey:"];
-    [hotkeyLabel setBezeled:NO];
-    [hotkeyLabel setDrawsBackground:NO];
-    [hotkeyLabel setEditable:NO];
-    [hotkeyLabel setSelectable:NO];
-    [content addSubview:hotkeyLabel];
+    _prefOpacityLabel = makeLabel([NSString stringWithFormat:@"%.0f%%", _config.opacity * 100]);
+    _prefOpacityLabel.textColor = [NSColor secondaryLabelColor];
     
-    /* Hotkey capture field */
-    _prefHotkeyField = [[HotkeyCaptureField alloc] initWithFrame:NSMakeRect(100, 70, 240, 24)];
+    [overlayContent addSubview:opacityLabel];
+    [overlayContent addSubview:_prefOpacitySlider];
+    [overlayContent addSubview:_prefOpacityLabel];
+
+    NSTextField *autoHideLabel = makeLabel(@"Auto-hide:");
+    _prefAutoHidePopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    _prefAutoHidePopup.translatesAutoresizingMaskIntoConstraints = NO;
+    [_prefAutoHidePopup addItemsWithTitles:@[@"Off (Persistent)", @"0.8s", @"2s"]];
+    if (_config.auto_hide <= 0.0f || _config.persistent) {
+        [_prefAutoHidePopup selectItemAtIndex:0];
+    } else if (fabsf(_config.auto_hide - 0.8f) < 0.001f) {
+        [_prefAutoHidePopup selectItemAtIndex:1];
+    } else if (fabsf(_config.auto_hide - 2.0f) < 0.001f) {
+        [_prefAutoHidePopup selectItemAtIndex:2];
+    } else {
+        [_prefAutoHidePopup selectItemAtIndex:1];
+    }
+    [content addSubview:autoHideLabel];
+    [content addSubview:_prefAutoHidePopup];
+
+    NSTextField *positionLabel = makeLabel(@"Position:");
+    _prefPositionPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    _prefPositionPopup.translatesAutoresizingMaskIntoConstraints = NO;
+    [_prefPositionPopup addItemsWithTitles:@[@"Center", @"Top-Center", @"Bottom-Center", @"Custom"]];
+    NSInteger posIndex = _config.position_mode;
+    if (posIndex < 0 || posIndex > 3) posIndex = 2;
+    [_prefPositionPopup selectItemAtIndex:posIndex];
+    [content addSubview:positionLabel];
+    [content addSubview:_prefPositionPopup];
+
+    _prefClickThroughCheckbox = [[NSButton alloc] initWithFrame:NSZeroRect];
+    _prefClickThroughCheckbox.translatesAutoresizingMaskIntoConstraints = NO;
+    [_prefClickThroughCheckbox setButtonType:NSButtonTypeSwitch];
+    [_prefClickThroughCheckbox setTitle:@"Click-through (ignore mouse)"];
+    [_prefClickThroughCheckbox setState:_config.click_through ? NSControlStateValueOn : NSControlStateValueOff];
+    [content addSubview:_prefClickThroughCheckbox];
+
+    _prefAlwaysOnTopCheckbox = [[NSButton alloc] initWithFrame:NSZeroRect];
+    _prefAlwaysOnTopCheckbox.translatesAutoresizingMaskIntoConstraints = NO;
+    [_prefAlwaysOnTopCheckbox setButtonType:NSButtonTypeSwitch];
+    [_prefAlwaysOnTopCheckbox setTitle:@"Always on top"];
+    [_prefAlwaysOnTopCheckbox setState:_config.always_on_top ? NSControlStateValueOn : NSControlStateValueOff];
+    [content addSubview:_prefAlwaysOnTopCheckbox];
+
+    /* Separator */
+    NSBox *sep = [[NSBox alloc] initWithFrame:NSZeroRect];
+    sep.boxType = NSBoxSeparator;
+    sep.translatesAutoresizingMaskIntoConstraints = NO;
+    [content addSubview:sep];
+
+    NSTextField *hotkeyLabel = makeLabel(@"Hotkey:");
+    _prefHotkeyField = [[HotkeyCaptureField alloc] initWithFrame:NSZeroRect];
+    _prefHotkeyField.translatesAutoresizingMaskIntoConstraints = NO;
     [_prefHotkeyField setTarget:self];
     [_prefHotkeyField setAction:@selector(prefHotkeyCaptured:)];
     NSString *hk = [NSString stringWithUTF8String:_config.hotkey];
     if (!hk) hk = @"";
     [_prefHotkeyField setStringValue:hk];
     [_prefHotkeyField setPlaceholderString:@"Click and press a hotkey"];
+    [content addSubview:hotkeyLabel];
     [content addSubview:_prefHotkeyField];
-    
-    /* Use custom pixel size checkbox */
-    NSButton *useCustomBtn = [[NSButton alloc] initWithFrame:NSMakeRect(12, 40, 140, 24)];
-    [useCustomBtn setButtonType:NSButtonTypeSwitch];
-    [useCustomBtn setTitle:@"Use custom size"];
-    [useCustomBtn setTarget:self];
-    [useCustomBtn setAction:@selector(prefUseCustomSizeToggled:)];
-    [useCustomBtn setState:_config.use_custom_size ? NSControlStateValueOn : NSControlStateValueOff];
-    _prefUseCustomSizeCheckbox = useCustomBtn;
-    [content addSubview:useCustomBtn];
-    
-    /* Width label and field */
-    NSTextField *widthLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(160, 42, 20, 24)];
-    [widthLabel setStringValue:@"W:"];
-    [widthLabel setBezeled:NO];
-    [widthLabel setDrawsBackground:NO];
-    [widthLabel setEditable:NO];
-    [widthLabel setSelectable:NO];
+
+    _prefUseCustomSizeCheckbox = [[NSButton alloc] initWithFrame:NSZeroRect];
+    _prefUseCustomSizeCheckbox.translatesAutoresizingMaskIntoConstraints = NO;
+    [_prefUseCustomSizeCheckbox setButtonType:NSButtonTypeSwitch];
+    [_prefUseCustomSizeCheckbox setTitle:@"Use custom size"];
+    [_prefUseCustomSizeCheckbox setTarget:self];
+    [_prefUseCustomSizeCheckbox setAction:@selector(prefUseCustomSizeToggled:)];
+    [_prefUseCustomSizeCheckbox setState:_config.use_custom_size ? NSControlStateValueOn : NSControlStateValueOff];
+    [content addSubview:_prefUseCustomSizeCheckbox];
+
+    NSTextField *widthLabel = makeLabel(@"W:");
+    widthLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [content addSubview:widthLabel];
-    
-    _prefWidthField = [[NSTextField alloc] initWithFrame:NSMakeRect(185, 40, 70, 24)];
+
+    _prefWidthField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    _prefWidthField.translatesAutoresizingMaskIntoConstraints = NO;
     [_prefWidthField setStringValue:[NSString stringWithFormat:@"%d", _config.custom_width_px]];
     [_prefWidthField setEnabled:_config.use_custom_size ? YES : NO];
     [content addSubview:_prefWidthField];
-    
-    /* Height label and field */
-    NSTextField *heightLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(260, 42, 20, 24)];
-    [heightLabel setStringValue:@"H:"];
-    [heightLabel setBezeled:NO];
-    [heightLabel setDrawsBackground:NO];
-    [heightLabel setEditable:NO];
-    [heightLabel setSelectable:NO];
+
+    NSTextField *heightLabel = makeLabel(@"H:");
+    heightLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [content addSubview:heightLabel];
-    
-    _prefHeightField = [[NSTextField alloc] initWithFrame:NSMakeRect(285, 40, 55, 24)];
+
+    _prefHeightField = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    _prefHeightField.translatesAutoresizingMaskIntoConstraints = NO;
     [_prefHeightField setStringValue:[NSString stringWithFormat:@"%d", _config.custom_height_px]];
     [_prefHeightField setEnabled:_config.use_custom_size ? YES : NO];
     [content addSubview:_prefHeightField];
-    
-    /* Inline error label (shows validation/registration messages while prefs are open) */
-    _prefErrorLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(12, 44, 328, 18)];
+
+    _prefErrorLabel = [[NSTextField alloc] initWithFrame:NSZeroRect];
+    _prefErrorLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [_prefErrorLabel setBezeled:NO];
     [_prefErrorLabel setDrawsBackground:NO];
     [_prefErrorLabel setEditable:NO];
     [_prefErrorLabel setSelectable:NO];
-    /* Set red color for visibility */
     [_prefErrorLabel setTextColor:[NSColor systemRedColor]];
     [_prefErrorLabel setStringValue:@""];
     [content addSubview:_prefErrorLabel];
 
-    /* Restore Defaults button */
-    NSButton *restoreBtn = [[NSButton alloc] initWithFrame:NSMakeRect(12, 12, 110, 28)];
+    /* Buttons */
+    NSButton *restoreBtn = [[NSButton alloc] initWithFrame:NSZeroRect];
+    restoreBtn.translatesAutoresizingMaskIntoConstraints = NO;
     [restoreBtn setTitle:@"Restore Defaults"];
     [restoreBtn setBezelStyle:NSBezelStyleRounded];
     [restoreBtn setTarget:self];
     [restoreBtn setAction:@selector(prefRestoreDefaults:)];
     _prefRestoreDefaultsBtn = restoreBtn;
+    [content addSubview:restoreBtn];
+
+    NSButton *closeBtn = [[NSButton alloc] initWithFrame:NSZeroRect];
+    closeBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [closeBtn setTitle:@"Close"];
+    [closeBtn setBezelStyle:NSBezelStyleRounded];
+    [closeBtn setTarget:self];
+    [closeBtn setAction:@selector(prefClose:)];
+    [content addSubview:closeBtn];
+
+    NSButton *clearBtn = [[NSButton alloc] initWithFrame:NSZeroRect];
+    clearBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [clearBtn setTitle:@"Clear"];
+    [clearBtn setBezelStyle:NSBezelStyleRounded];
+    [clearBtn setTarget:self];
+    [clearBtn setAction:@selector(prefClearHotkey:)];
+    [content addSubview:clearBtn];
+
+    NSButton *applyBtn = [[NSButton alloc] initWithFrame:NSZeroRect];
+    applyBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [applyBtn setTitle:@"Apply"];
+    [applyBtn setBezelStyle:NSBezelStyleRounded];
+    [applyBtn setTarget:self];
+    [applyBtn setAction:@selector(prefApply:)];
+    [content addSubview:applyBtn];
+
     /* Disable restore when current config already equals defaults */
     {
         Config defaults = get_default_config();
+        BOOL hkEqual = YES;
         NSString *curHot = [NSString stringWithUTF8String:_config.hotkey ?: ""];
         NSString *defHot = [NSString stringWithUTF8String:defaults.hotkey ?: ""];
-        BOOL hkEqual = (curHot && defHot && [curHot isEqualToString:defHot]);
+        hkEqual = (curHot && defHot && [curHot isEqualToString:defHot]);
+
         BOOL is_default = (_config.use_custom_size == defaults.use_custom_size &&
                            _config.custom_width_px == defaults.custom_width_px &&
                            _config.custom_height_px == defaults.custom_height_px &&
@@ -1413,35 +1398,145 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
                            _config.invert == defaults.invert &&
                            _config.persistent == defaults.persistent &&
                            fabsf(_config.scale - defaults.scale) < 0.001f &&
-                           hkEqual);
+                           hkEqual &&
+                           _config.position_mode == defaults.position_mode &&
+                           _config.start_at_login == defaults.start_at_login &&
+                           _config.click_through == defaults.click_through &&
+                           _config.always_on_top == defaults.always_on_top &&
+                           fabsf(_config.auto_hide - defaults.auto_hide) < 0.001f);
         [_prefRestoreDefaultsBtn setEnabled: !is_default];
     }
-    [content addSubview:restoreBtn];
 
-    /* Apply button */
-    NSButton *applyBtn = [[NSButton alloc] initWithFrame:NSMakeRect(260, 12, 80, 28)];
-    [applyBtn setTitle:@"Apply"];
-    [applyBtn setBezelStyle:NSBezelStyleRounded];
-    [applyBtn setTarget:self];
-    [applyBtn setAction:@selector(prefApply:)];
-    [content addSubview:applyBtn];
-    
-    /* Clear hotkey button */
-    NSButton *clearBtn = [[NSButton alloc] initWithFrame:NSMakeRect(170, 12, 80, 28)];
-    [clearBtn setTitle:@"Clear"];
-    [clearBtn setBezelStyle:NSBezelStyleRounded];
-    [clearBtn setTarget:self];
-    [clearBtn setAction:@selector(prefClearHotkey:)];
-    [content addSubview:clearBtn];
-    
-    /* Close button */
-    NSButton *closeBtn = [[NSButton alloc] initWithFrame:NSMakeRect(95, 12, 80, 28)];
-    [closeBtn setTitle:@"Close"];
-    [closeBtn setBezelStyle:NSBezelStyleRounded];
-    [closeBtn setTarget:self];
-    [closeBtn setAction:@selector(prefClose:)];
-    [content addSubview:closeBtn];
-    
+    /* Layout constraints */
+    NSDictionary *views = @{
+        @"opacityLabel": opacityLabel,
+        @"opacitySlider": _prefOpacitySlider,
+        @"autoHideLabel": autoHideLabel,
+        @"autoHidePopup": _prefAutoHidePopup,
+        @"positionLabel": positionLabel,
+        @"positionPopup": _prefPositionPopup,
+        @"clickThrough": _prefClickThroughCheckbox,
+        @"alwaysOnTop": _prefAlwaysOnTopCheckbox,
+        @"sep": sep,
+        @"hotkeyLabel": hotkeyLabel,
+        @"hotkeyField": _prefHotkeyField,
+        @"useCustom": _prefUseCustomSizeCheckbox,
+        @"widthLabel": widthLabel,
+        @"widthField": _prefWidthField,
+        @"heightLabel": heightLabel,
+        @"heightField": _prefHeightField,
+        @"error": _prefErrorLabel,
+        @"restore": restoreBtn,
+        @"close": closeBtn,
+        @"clear": clearBtn,
+        @"apply": applyBtn
+    };
+
+    CGFloat margin = 14.0f;
+    NSMutableArray *constraints = [NSMutableArray array];
+
+    /* Horizontal: label column fixed width, controls stretch */
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:opacityLabel attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin],
+        [NSLayoutConstraint constraintWithItem:opacityLabel attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1.0 constant:120],
+        [NSLayoutConstraint constraintWithItem:_prefOpacitySlider attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:opacityLabel attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:8],
+        [NSLayoutConstraint constraintWithItem:_prefOpacitySlider attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin]
+    ]];
+
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:autoHideLabel attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin],
+        [NSLayoutConstraint constraintWithItem:autoHideLabel attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1.0 constant:120],
+        [NSLayoutConstraint constraintWithItem:_prefAutoHidePopup attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:autoHideLabel attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:8],
+        [NSLayoutConstraint constraintWithItem:_prefAutoHidePopup attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationLessThanOrEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin]
+    ]];
+
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:positionLabel attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin],
+        [NSLayoutConstraint constraintWithItem:positionLabel attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1.0 constant:120],
+        [NSLayoutConstraint constraintWithItem:_prefPositionPopup attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:positionLabel attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:8],
+        [NSLayoutConstraint constraintWithItem:_prefPositionPopup attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationLessThanOrEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin]
+    ]];
+
+    /* Checkboxes side-by-side */
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:_prefClickThroughCheckbox attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin],
+        [NSLayoutConstraint constraintWithItem:_prefAlwaysOnTopCheckbox attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:_prefClickThroughCheckbox attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:12],
+        [NSLayoutConstraint constraintWithItem:_prefAlwaysOnTopCheckbox attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationLessThanOrEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin]
+    ]];
+
+    /* Separator full width */
+    [constraints addObject:[NSLayoutConstraint constraintWithItem:sep attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin]];
+    [constraints addObject:[NSLayoutConstraint constraintWithItem:sep attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin]];
+
+    /* Hotkey row */
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:hotkeyLabel attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin],
+        [NSLayoutConstraint constraintWithItem:hotkeyLabel attribute:NSLayoutAttributeWidth relatedBy:NSLayoutRelationEqual toItem:nil attribute:NSLayoutAttributeNotAnAttribute multiplier:1.0 constant:120],
+        [NSLayoutConstraint constraintWithItem:_prefHotkeyField attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:hotkeyLabel attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:8],
+        [NSLayoutConstraint constraintWithItem:_prefHotkeyField attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin]
+    ]];
+
+    /* Custom size controls inline */
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:_prefUseCustomSizeCheckbox attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin],
+        [NSLayoutConstraint constraintWithItem:widthLabel attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:_prefUseCustomSizeCheckbox attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:12],
+        [NSLayoutConstraint constraintWithItem:_prefWidthField attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:widthLabel attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:6],
+        [NSLayoutConstraint constraintWithItem:heightLabel attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:_prefWidthField attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:12],
+        [NSLayoutConstraint constraintWithItem:_prefHeightField attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:heightLabel attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:6],
+        [NSLayoutConstraint constraintWithItem:_prefHeightField attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationLessThanOrEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin]
+    ]];
+
+    /* Error label spans full width */
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:_prefErrorLabel attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin],
+        [NSLayoutConstraint constraintWithItem:_prefErrorLabel attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin]
+    ]];
+
+    /* Buttons row (right aligned) */
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:applyBtn attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeTrailing multiplier:1.0 constant:-margin],
+        [NSLayoutConstraint constraintWithItem:closeBtn attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:applyBtn attribute:NSLayoutAttributeLeading multiplier:1.0 constant:-12],
+        [NSLayoutConstraint constraintWithItem:clearBtn attribute:NSLayoutAttributeTrailing relatedBy:NSLayoutRelationEqual toItem:closeBtn attribute:NSLayoutAttributeLeading multiplier:1.0 constant:-12],
+        [NSLayoutConstraint constraintWithItem:restoreBtn attribute:NSLayoutAttributeLeading relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeLeading multiplier:1.0 constant:margin]
+    ]];
+
+    /* Vertical stacking */
+    CGFloat vgap = 12.0f;
+    [constraints addObjectsFromArray:@[
+        [NSLayoutConstraint constraintWithItem:opacityLabel attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeTop multiplier:1.0 constant:20],
+        [NSLayoutConstraint constraintWithItem:_prefOpacitySlider attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:opacityLabel attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+
+        [NSLayoutConstraint constraintWithItem:autoHideLabel attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:opacityLabel attribute:NSLayoutAttributeBottom multiplier:1.0 constant:vgap],
+        [NSLayoutConstraint constraintWithItem:_prefAutoHidePopup attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:autoHideLabel attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+
+        [NSLayoutConstraint constraintWithItem:positionLabel attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:autoHideLabel attribute:NSLayoutAttributeBottom multiplier:1.0 constant:vgap],
+        [NSLayoutConstraint constraintWithItem:_prefPositionPopup attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:positionLabel attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+
+        [NSLayoutConstraint constraintWithItem:_prefClickThroughCheckbox attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:positionLabel attribute:NSLayoutAttributeBottom multiplier:1.0 constant:vgap],
+        [NSLayoutConstraint constraintWithItem:_prefAlwaysOnTopCheckbox attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:_prefClickThroughCheckbox attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+
+        [NSLayoutConstraint constraintWithItem:sep attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:_prefClickThroughCheckbox attribute:NSLayoutAttributeBottom multiplier:1.0 constant:vgap],
+        
+        [NSLayoutConstraint constraintWithItem:hotkeyLabel attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:sep attribute:NSLayoutAttributeBottom multiplier:1.0 constant:vgap],
+        [NSLayoutConstraint constraintWithItem:_prefHotkeyField attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:hotkeyLabel attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+
+        [NSLayoutConstraint constraintWithItem:_prefUseCustomSizeCheckbox attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:_prefHotkeyField attribute:NSLayoutAttributeBottom multiplier:1.0 constant:vgap],
+        [NSLayoutConstraint constraintWithItem:widthLabel attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:_prefUseCustomSizeCheckbox attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+        [NSLayoutConstraint constraintWithItem:_prefWidthField attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:_prefUseCustomSizeCheckbox attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+        [NSLayoutConstraint constraintWithItem:heightLabel attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:_prefUseCustomSizeCheckbox attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+        [NSLayoutConstraint constraintWithItem:_prefHeightField attribute:NSLayoutAttributeCenterY relatedBy:NSLayoutRelationEqual toItem:_prefUseCustomSizeCheckbox attribute:NSLayoutAttributeCenterY multiplier:1.0 constant:0],
+
+        [NSLayoutConstraint constraintWithItem:_prefErrorLabel attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:_prefUseCustomSizeCheckbox attribute:NSLayoutAttributeBottom multiplier:1.0 constant:vgap],
+
+        [NSLayoutConstraint constraintWithItem:applyBtn attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeBottom multiplier:1.0 constant:-12],
+        [NSLayoutConstraint constraintWithItem:restoreBtn attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeBottom multiplier:1.0 constant:-12],
+        [NSLayoutConstraint constraintWithItem:closeBtn attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeBottom multiplier:1.0 constant:-12],
+        [NSLayoutConstraint constraintWithItem:clearBtn attribute:NSLayoutAttributeBottom relatedBy:NSLayoutRelationEqual toItem:content attribute:NSLayoutAttributeBottom multiplier:1.0 constant:-12]
+    ]];
+
+    [NSLayoutConstraint activateConstraints:constraints];
+
+    /* Center and show */
     [_prefsWindow center];
     [NSApp activateIgnoringOtherApps:YES];
     [_prefsWindow makeKeyAndOrderFront:nil];
@@ -1449,6 +1544,10 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
 
 - (void)prefOpacityChanged:(NSSlider *)sender {
     _config.opacity = (float)[sender doubleValue];
+    /* Update percentage label */
+    if (_prefOpacityLabel) {
+        [_prefOpacityLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", _config.opacity * 100]];
+    }
     /* Clear inline error (live feedback) */
     if (_prefErrorLabel) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1456,6 +1555,26 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
         });
     }
     /* Live preview */
+    [self updateOverlayImage];
+}
+
+- (void)prefScaleChanged:(NSSlider *)sender {
+    _config.scale = (float)[sender doubleValue];
+    _config.use_custom_size = NO; // Switch to scale mode
+    
+    /* Update percentage label */
+    if (_prefScaleLabel) {
+        [_prefScaleLabel setStringValue:[NSString stringWithFormat:@"%.0f%%", _config.scale * 100]];
+    }
+    /* Clear inline error (live feedback) */
+    if (_prefErrorLabel) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [_prefErrorLabel setStringValue:@""];
+        });
+    }
+    /* Live preview with new scale */
+    [self loadOverlay];
+    [self createOverlayWindow];
     [self updateOverlayImage];
 }
 
@@ -1485,50 +1604,37 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
 }
 
 - (void)prefApply:(id)sender {
-    /* Save hotkey text and apply immediately by re-registering */
+    /* Capture hotkey string from field */
     NSString *hkStr = nil;
     if ([_prefHotkeyField respondsToSelector:@selector(currentHotkey)]) {
         hkStr = (NSString *)[_prefHotkeyField performSelector:@selector(currentHotkey)];
     } else {
         hkStr = [_prefHotkeyField stringValue];
     }
-    if (!hkStr || [hkStr length] == 0) {
-        if (_prefErrorLabel) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [_prefErrorLabel setStringValue:@"Please capture a hotkey before applying."];
-            });
-        } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSAlert *alert = [[NSAlert alloc] init];
-                [alert setMessageText:@"Invalid Hotkey"];
-                [alert setInformativeText:@"Please capture a hotkey before applying."];
-                [alert runModal];
-            });
-        }
-        return;
-    }
+    if (!hkStr) hkStr = @"";
+
+    /* Validate hotkey includes a modifier */
     BOOL hasModifier = ([hkStr localizedCaseInsensitiveContainsString:@"Command"] ||
                         [hkStr localizedCaseInsensitiveContainsString:@"Option"] ||
                         [hkStr localizedCaseInsensitiveContainsString:@"Shift"] ||
                         [hkStr localizedCaseInsensitiveContainsString:@"Control"]);
-    if (!hasModifier) {
+    if ([hkStr length] == 0 || !hasModifier) {
         if (_prefErrorLabel) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                [_prefErrorLabel setStringValue:@"Hotkey must include a modifier (Command/Option/Shift/Control)."];
+                [_prefErrorLabel setStringValue:@"Please capture a valid hotkey (include a modifier)."];
             });
         } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                NSAlert *alert = [[NSAlert alloc] init];
-                [alert setMessageText:@"Hotkey must include a modifier"];
-                [alert setInformativeText:@"Use at least one modifier key (Command, Option, Shift, or Control) to avoid accidental triggers."];
-                [alert runModal];
-            });
+            NSAlert *a = [[NSAlert alloc] init];
+            [a setMessageText:@"Invalid Hotkey"];
+            [a setInformativeText:@"Please capture a hotkey including at least one modifier (Command/Option/Shift/Control)."];
+            [a runModal];
         }
         return;
     }
 
     NSLog(@"prefApply: applying hotkey='%@' opacity=%.2f", hkStr, (float)[_prefOpacitySlider doubleValue]);
 
+    /* Write hotkey into config */
     const char *hk = [hkStr UTF8String];
     if (hk) {
         size_t len = strlen(hk);
@@ -1536,8 +1642,47 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
         memcpy(_config.hotkey, hk, len);
         _config.hotkey[len] = '\0';
     }
-    /* Save opacity from slider */
+
+    /* Opacity */
     _config.opacity = (float)[_prefOpacitySlider doubleValue];
+
+    /* Auto-hide popup -> config.auto_hide and persistent migration flag */
+    if (_prefAutoHidePopup) {
+        NSInteger idx = [_prefAutoHidePopup indexOfSelectedItem];
+        switch (idx) {
+            case 0: /* Off / persistent */
+                _config.auto_hide = 0.0f;
+                _config.persistent = 1;
+                break;
+            case 1:
+                _config.auto_hide = 0.8f;
+                _config.persistent = 0;
+                break;
+            case 2:
+                _config.auto_hide = 2.0f;
+                _config.persistent = 0;
+                break;
+            default:
+                _config.auto_hide = 0.8f;
+                _config.persistent = 0;
+                break;
+        }
+    }
+
+    /* Position mode */
+    if (_prefPositionPopup) {
+        NSInteger pm = [_prefPositionPopup indexOfSelectedItem];
+        if (pm < 0) pm = 2;
+        _config.position_mode = (int)pm;
+    }
+
+    /* Click-through and Always-on-top */
+    if (_prefClickThroughCheckbox) {
+        _config.click_through = ([_prefClickThroughCheckbox state] == NSControlStateValueOn) ? 1 : 0;
+    }
+    if (_prefAlwaysOnTopCheckbox) {
+        _config.always_on_top = ([_prefAlwaysOnTopCheckbox state] == NSControlStateValueOn) ? 1 : 0;
+    }
 
     /* Read custom size settings if present */
     int prev_use_custom = _config.use_custom_size;
@@ -1556,12 +1701,10 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
                         [_prefErrorLabel setStringValue:@"Width and height must be positive integers."];
                     });
                 } else {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        NSAlert *alert = [[NSAlert alloc] init];
-                        [alert setMessageText:@"Invalid size"];
-                        [alert setInformativeText:@"Please enter positive integer values for width and height."];
-                        [alert runModal];
-                    });
+                    NSAlert *alert = [[NSAlert alloc] init];
+                    [alert setMessageText:@"Invalid size"];
+                    [alert setInformativeText:@"Please enter positive integer values for width and height."];
+                    [alert runModal];
                 }
                 return;
             }
@@ -1570,7 +1713,54 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
         }
     }
 
+    /* Persist config */
     save_config(&_config, NULL);
+
+    /* Apply click-through and always-on-top immediately to existing panel if present */
+    if (_panel) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            /* Click-through */
+            if (_config.click_through) {
+                [_panel setIgnoresMouseEvents:YES];
+            } else {
+                [_panel setIgnoresMouseEvents:NO];
+            }
+            /* Window level */
+            if (_config.always_on_top) {
+                [_panel setLevel:NSScreenSaverWindowLevel];
+            } else {
+                [_panel setLevel:NSNormalWindowLevel];
+            }
+
+            /* Alpha (opacity) */
+            [_panel setAlphaValue:_config.opacity];
+
+            /* Reposition according to position_mode */
+            NSScreen *screen = [NSScreen mainScreen];
+            NSRect screenFrame = [screen visibleFrame];
+            NSRect panelFrame = [_panel frame];
+            switch (_config.position_mode) {
+                case 0: /* Center */
+                    panelFrame.origin.x = NSMidX(screenFrame) - NSWidth(panelFrame) / 2.0;
+                    panelFrame.origin.y = NSMidY(screenFrame) - NSHeight(panelFrame) / 2.0;
+                    break;
+                case 1: /* Top-Center */
+                    panelFrame.origin.x = NSMidX(screenFrame) - NSWidth(panelFrame) / 2.0;
+                    panelFrame.origin.y = NSMaxY(screenFrame) - NSHeight(panelFrame) - (_config.position_y);
+                    break;
+                case 2: /* Bottom-Center */
+                    panelFrame.origin.x = NSMidX(screenFrame) - NSWidth(panelFrame) / 2.0;
+                    panelFrame.origin.y = NSMinY(screenFrame) + (_config.position_y);
+                    break;
+                case 3: /* Custom: use position_x/position_y as offsets from center/bottom */
+                default:
+                    panelFrame.origin.x = NSMidX(screenFrame) - NSWidth(panelFrame) / 2.0 + _config.position_x;
+                    panelFrame.origin.y = NSMinY(screenFrame) + _config.position_y;
+                    break;
+            }
+            [_panel setFrame:panelFrame display:YES];
+        });
+    }
 
     /* Clear inline error after successful save */
     if (_prefErrorLabel) {
@@ -1578,6 +1768,7 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
             [_prefErrorLabel setStringValue:@""];
         });
     }
+
     /* Update Restore Defaults button enabled state */
     if (_prefRestoreDefaultsBtn) {
         Config defaults = get_default_config();
@@ -1591,7 +1782,12 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
                            _config.invert == defaults.invert &&
                            _config.persistent == defaults.persistent &&
                            fabsf(_config.scale - defaults.scale) < 0.001f &&
-                           hkEqual);
+                           hkEqual &&
+                           _config.position_mode == defaults.position_mode &&
+                           _config.start_at_login == defaults.start_at_login &&
+                           _config.click_through == defaults.click_through &&
+                           _config.always_on_top == defaults.always_on_top &&
+                           fabsf(_config.auto_hide - defaults.auto_hide) < 0.001f);
         dispatch_async(dispatch_get_main_queue(), ^{
             [_prefRestoreDefaultsBtn setEnabled: !is_default];
         });
@@ -1602,13 +1798,12 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
         free_overlay(&_overlay);
         [self loadOverlay];
         [self createOverlayWindow];
-        /* Update menu so checked size items remain consistent */
-        _statusItem.menu = [self buildMenu];
     }
 
-    /* Re-register Carbon hotkey immediately so changes take effect without restart */
+    /* Re-register Carbon hotkey and update menu/preview */
     [self registerCarbonHotkey];
     [self updateOverlayImage];
+    _statusItem.menu = [self buildMenu];
 }
 
 - (void)prefRestoreDefaults:(id)sender {
@@ -1628,6 +1823,30 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
     if (_prefHeightField) [_prefHeightField setStringValue:[NSString stringWithFormat:@"%d", _config.custom_height_px]];
     if (_prefErrorLabel) [_prefErrorLabel setStringValue:@""];
     if (_prefRestoreDefaultsBtn) [_prefRestoreDefaultsBtn setEnabled:NO];
+
+    /* New UI fields: Auto-hide, Position, Click-through, Always-on-top */
+    if (_prefAutoHidePopup) {
+        if (_config.auto_hide <= 0.0f || _config.persistent) {
+            [_prefAutoHidePopup selectItemAtIndex:0];
+        } else if (fabsf(_config.auto_hide - 0.8f) < 0.001f) {
+            [_prefAutoHidePopup selectItemAtIndex:1];
+        } else if (fabsf(_config.auto_hide - 2.0f) < 0.001f) {
+            [_prefAutoHidePopup selectItemAtIndex:2];
+        } else {
+            [_prefAutoHidePopup selectItemAtIndex:1];
+        }
+    }
+    if (_prefPositionPopup) {
+        NSInteger posIndex = _config.position_mode;
+        if (posIndex < 0 || posIndex > 3) posIndex = 2;
+        [_prefPositionPopup selectItemAtIndex:posIndex];
+    }
+    if (_prefClickThroughCheckbox) {
+        [_prefClickThroughCheckbox setState:_config.click_through ? NSControlStateValueOn : NSControlStateValueOff];
+    }
+    if (_prefAlwaysOnTopCheckbox) {
+        [_prefAlwaysOnTopCheckbox setState:_config.always_on_top ? NSControlStateValueOn : NSControlStateValueOff];
+    }
 
     /* Reload overlay and UI */
     free_overlay(&_overlay);
@@ -1660,7 +1879,8 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
 }
 
 - (BOOL)isPersistent {
-    return _config.persistent;
+    /* Consider legacy persistent flag but prefer explicit auto_hide == 0.0 semantics */
+    return (_config.persistent || fabsf(_config.auto_hide - 0.0f) < 0.0001f);
 }
 
 - (void)windowWillClose:(NSNotification *)notification {
@@ -1678,7 +1898,31 @@ static void HIDInputCallback(void *context, IOReturn result, void *sender, IOHID
         _prefHeightField = nil;
         _prefErrorLabel = nil;
         _prefRestoreDefaultsBtn = nil;
+        _prefAutoHidePopup = nil;
+        _prefPositionPopup = nil;
+        _prefClickThroughCheckbox = nil;
+        _prefAlwaysOnTopCheckbox = nil;
     }
+}
+
+/* Backwards-compatible stubs for legacy header declarations.
+   The app now uses Carbon as the single hotkey mechanism; these methods
+   forward to the Carbon-based implementation or act as no-ops to keep the
+   public API stable and silence build warnings.
+*/
+- (void)unregisterCurrentHotkey {
+    /* Forward to Carbon unregister helper */
+    [self unregisterCarbonHotkey];
+}
+
+- (void)handleCGEventWithKeyCode:(CGKeyCode)keyCode flags:(CGEventFlags)flags filteredFlags:(CGEventFlags)filteredFlags isKeyDown:(BOOL)isKeyDown {
+    /* No-op fallback: CGEventTap / IOHID fallbacks were removed to reduce bulk.
+       Keep this stub so code paths that reference the selector remain valid.
+     */
+    (void)keyCode;
+    (void)flags;
+    (void)filteredFlags;
+    (void)isKeyDown;
 }
 
 @end

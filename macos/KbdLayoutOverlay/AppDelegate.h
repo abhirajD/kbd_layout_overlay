@@ -7,6 +7,16 @@
 - (void)hideOverlay;
 - (BOOL)isPersistent;
 
+/* New UX action methods */
+- (void)toggleShowKeymap:(id)sender;
+- (void)previewKeymap:(id)sender;
+- (void)setSize125:(id)sender;
+- (void)setSizeFitScreen:(id)sender;
+- (void)setOpacity50:(id)sender;
+- (void)setOpacity70:(id)sender;
+- (void)setOpacity85:(id)sender;
+- (void)setOpacity100:(id)sender;
+
 /* Hotkey control helpers */
 - (void)registerHotkey;
 - (void)registerCarbonHotkey;
