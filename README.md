@@ -13,10 +13,21 @@ A lightweight utility that shows a keyboard overlay when you press a hotkey. Sim
 ## Installation
 
 ### macOS
-1. Build with `cmake . && make`
-2. Run `KbdLayoutOverlay.app`
-3. Look for "KLO" in menu bar
-4. Press Cmd+Option+Shift+/ to show overlay
+1. Build: `cmake . && make` (or from the project root: `mkdir build && cd build && cmake .. && make`)
+2. Run the built app: open `build/KbdLayoutOverlay.app`
+3. Grant permissions if prompted:
+   - On macOS 12+ you may need to enable Input Monitoring (and sometimes Accessibility) in System Settings → Privacy & Security → Input Monitoring / Accessibility for "KbdLayoutOverlay".
+   - If the app cannot create the global event tap you'll see a log entry "Failed to create CGEventTap for hotkey" and the app will offer to open the Privacy settings.
+   - After granting permissions, fully quit and restart the app.
+4. Verify UI: look for the "KLO" status item in the menu bar.
+5. Test hotkey: press and hold Cmd+Option+Shift+/ — overlay should appear while held and disappear on release.
+6. Logs and troubleshooting:
+   - Runtime log: /tmp/kbd_layout_overlay.log
+     - Contains startup, hotkey press/release, show/hide, and crash/exit messages.
+   - Position/debug files (for overlay diagnostics):
+     - /tmp/kbd_overlay_debug.txt
+     - /tmp/kbd_overlay_position.txt
+   - If you see "Failed to create CGEventTap for hotkey" in the log, open System Settings → Privacy & Security → Input Monitoring (and Accessibility) and enable the app, then restart the app.
 
 ### Windows  
 1. Build with `cmake . && cmake --build . --config Release`
