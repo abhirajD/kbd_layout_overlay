@@ -181,6 +181,14 @@
     BOOL _carbonHandlerInstalled;
     NSTimer *_carbonHideTimer;
     NSTimer *_autoHideTimer;
+
+    /* Original PNG data and last-used sizing config */
+    unsigned char *_originalImageData;
+    int _originalImageSize;
+    float _lastScale;
+    int _lastCustomWidth;
+    int _lastCustomHeight;
+    int _lastUseCustom;
 }
 @end
 
@@ -268,8 +276,19 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
     /* Initialize logger early for parity with Windows */
     logger_init();
     logger_log("KbdLayoutOverlay (macOS) starting up");
-    
+
+    _originalImageData = NULL;
+    _originalImageSize = 0;
+    _lastScale = -1.0f;
+    _lastCustomWidth = -1;
+    _lastCustomHeight = -1;
+    _lastUseCustom = -1;
+
     [self loadOverlay];
+    _lastScale = _config.scale;
+    _lastCustomWidth = _config.custom_width_px;
+    _lastCustomHeight = _config.custom_height_px;
+    _lastUseCustom = _config.use_custom_size;
     [self createOverlayWindow];
     /* Carbon hotkeys don't need accessibility permissions */
     [self registerCarbonHotkey];
@@ -302,7 +321,12 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
         _previewBuffer = NULL;
         _previewBufferSize = 0;
     }
-    
+    if (_originalImageData) {
+        free(_originalImageData);
+        _originalImageData = NULL;
+        _originalImageSize = 0;
+    }
+
     logger_close();
 }
 
@@ -320,38 +344,58 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
         max_h = (int)([screen frame].size.height * scale * _config.scale);
     }
     
-    /* Try multiple locations for keymap.png */
-    NSArray *searchPaths = @[
-        @"keymap.png",                                   // Current directory
-        @"assets/keymap.png",                           // Assets folder
-        @"../assets/keymap.png",                        // Assets folder (relative)
-        [[NSBundle mainBundle] pathForResource:@"keymap" ofType:@"png"] ?: @"", // Bundle resource
-    ];
-    
-    OverlayError result = OVERLAY_ERROR_FILE_NOT_FOUND;
-    for (NSString *pathStr in searchPaths) {
-        if ([pathStr length] == 0) continue;
-        
-        const char *path = [pathStr fileSystemRepresentation];
-        result = load_overlay(path, max_w, max_h, &_overlay);
-        if (result == OVERLAY_OK) {
-            NSLog(@"Loaded overlay from: %@", pathStr);
-            break;
+    if (!_originalImageData) {
+        /* Try multiple locations for keymap.png */
+        NSArray *searchPaths = @[
+            @"keymap.png",
+            @"assets/keymap.png",
+            @"../assets/keymap.png",
+            [[NSBundle mainBundle] pathForResource:@"keymap" ofType:@"png"] ?: @"",
+        ];
+
+        for (NSString *pathStr in searchPaths) {
+            if ([pathStr length] == 0) continue;
+            NSData *d = [NSData dataWithContentsOfFile:pathStr];
+            if (d) {
+                _originalImageSize = (int)[d length];
+                _originalImageData = malloc(_originalImageSize);
+                if (_originalImageData) {
+                    memcpy(_originalImageData, [d bytes], _originalImageSize);
+                    NSLog(@"Loaded overlay from: %@", pathStr);
+                    break;
+                }
+            }
         }
-    }
-    
-    if (result != OVERLAY_OK) {
-        /* Try embedded fallback */
-        int size;
-        const unsigned char *data = get_default_keymap(&size);
-        if (data && size > 0) {
-            result = load_overlay_mem(data, size, max_w, max_h, &_overlay);
-            if (result == OVERLAY_OK) {
-                NSLog(@"Using embedded keymap (build-time)");
+
+        if (!_originalImageData) {
+            int size;
+            const unsigned char *data = get_default_keymap(&size);
+            if (data && size > 0) {
+                _originalImageData = malloc(size);
+                if (_originalImageData) {
+                    memcpy(_originalImageData, data, size);
+                    _originalImageSize = size;
+                    NSLog(@"Using embedded keymap (build-time)");
+                }
             }
         }
     }
-    
+
+    if (!_originalImageData || _originalImageSize <= 0) {
+        NSString *errorTitle = @"Image Loading Failed";
+        NSString *errorMsg = @"Could not find keymap.png in any location";
+
+        NSAlert *alert = [[NSAlert alloc] init];
+        [alert setMessageText:errorTitle];
+        [alert setInformativeText:[NSString stringWithFormat:@"%@\n\nPlease place keymap.png in one of these locations:\n• assets/ folder (before building)\n• Project root directory\n• App bundle resources", errorMsg]];
+        [alert runModal];
+        [NSApp terminate:nil];
+        return;
+    }
+
+    OverlayError result = load_overlay_mem(_originalImageData, _originalImageSize,
+                                           max_w, max_h, &_overlay);
+
     if (result != OVERLAY_OK) {
         NSString *errorTitle = @"Image Loading Failed";
         NSString *errorMsg = @"Unknown error";
@@ -438,6 +482,25 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
     if (_imageView) {
         [_imageView setImage:_overlayImage];
     }
+}
+
+- (void)reloadOverlayIfNeeded {
+    if (fabsf(_config.scale - _lastScale) < 0.001f &&
+        _config.custom_width_px == _lastCustomWidth &&
+        _config.custom_height_px == _lastCustomHeight &&
+        _config.use_custom_size == _lastUseCustom) {
+        return; /* No changes */
+    }
+
+    _lastScale = _config.scale;
+    _lastCustomWidth = _config.custom_width_px;
+    _lastCustomHeight = _config.custom_height_px;
+    _lastUseCustom = _config.use_custom_size;
+
+    free_overlay(&_overlay);
+    [self loadOverlay];
+    [self createOverlayWindow];
+    [self updateOverlayImage];
 }
 
 - (void)createOverlayWindow {
@@ -1082,35 +1145,28 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
         float fitScale = targetWidth / _overlay.width;
         _config.scale = fitScale;
         _config.use_custom_size = 0; // Use scale mode
-        
+
         save_config(&_config, NULL);
-        
-        /* Reload overlay with new scale */
-        free_overlay(&_overlay);
-        [self loadOverlay];
-        [self createOverlayWindow];
-        
+        [self reloadOverlayIfNeeded];
+
         /* Update menu checkmarks */
         _statusItem.menu = [self buildMenu];
-        
+
         NSLog(@"Fit screen: scale %.1f%% (%.0fx%.0f)", fitScale * 100, _overlay.width * fitScale, _overlay.height * fitScale);
     }
 }
 
 - (void)setSizeScale:(float)scale sender:(id)sender {
     _config.scale = scale;
-    
+
     /* Persist change */
     save_config(&_config, NULL);
-    
-    /* Reload overlay with new scale */
-    free_overlay(&_overlay);
-    [self loadOverlay];
-    [self createOverlayWindow];
-    
+
+    [self reloadOverlayIfNeeded];
+
     /* Update menu checkmarks */
     _statusItem.menu = [self buildMenu];
-    
+
     NSLog(@"Changed scale to %.0f%%", scale * 100);
 }
 
@@ -1573,9 +1629,7 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
         });
     }
     /* Live preview with new scale */
-    [self loadOverlay];
-    [self createOverlayWindow];
-    [self updateOverlayImage];
+    [self reloadOverlayIfNeeded];
 }
 
 - (void)prefHotkeyCaptured:(id)sender {
@@ -1793,16 +1847,10 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
         });
     }
 
-    /* If sizing changed, reload overlay and recreate panel to reflect new pixel dimensions */
-    if (prev_use_custom != _config.use_custom_size || prev_w != _config.custom_width_px || prev_h != _config.custom_height_px) {
-        free_overlay(&_overlay);
-        [self loadOverlay];
-        [self createOverlayWindow];
-    }
+    [self reloadOverlayIfNeeded];
 
     /* Re-register Carbon hotkey and update menu/preview */
     [self registerCarbonHotkey];
-    [self updateOverlayImage];
     _statusItem.menu = [self buildMenu];
 }
 
@@ -1849,14 +1897,11 @@ static OSStatus CarbonHotkeyHandler(EventHandlerCallRef nextHandler, EventRef th
     }
 
     /* Reload overlay and UI */
-    free_overlay(&_overlay);
-    [self loadOverlay];
-    [self createOverlayWindow];
+    [self reloadOverlayIfNeeded];
     _statusItem.menu = [self buildMenu];
 
-    /* Re-register Carbon hotkey (defaults) and update preview */
+    /* Re-register Carbon hotkey (defaults) */
     [self registerCarbonHotkey];
-    [self updateOverlayImage];
 
     /* Re-enable restore button */
     if (_prefRestoreDefaultsBtn) [_prefRestoreDefaultsBtn setEnabled:YES];

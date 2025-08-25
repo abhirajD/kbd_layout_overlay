@@ -47,6 +47,14 @@ static HWND g_opacity_label = NULL;
 static HWND g_autohide_slider = NULL;
 static HWND g_autohide_label = NULL;
 
+/* Original overlay image (PNG data) and last-used sizing config */
+static unsigned char *g_original_image = NULL;
+static int g_original_image_size = 0;
+static float g_last_scale = -1.0f;
+static int g_last_custom_width = -1;
+static int g_last_custom_height = -1;
+static int g_last_use_custom = -1;
+
 /* Control IDs */
 #define ID_PREFS_OPEN 8
 #define IDC_PREFS_OK 101
@@ -75,6 +83,11 @@ static void cleanup_resources(void) {
     if (g_mem_dc) DeleteDC(g_mem_dc);
     if (g_screen_dc) ReleaseDC(NULL, g_screen_dc);
     free_overlay(&g_overlay);
+    if (g_original_image) {
+        free(g_original_image);
+        g_original_image = NULL;
+        g_original_image_size = 0;
+    }
 }
 
 /* Get virtual desktop bounds (multi-monitor support from working example) */
@@ -121,6 +134,54 @@ static int get_monitor_count(void) {
     return count;
 }
 
+/* Load and cache the original PNG data for the overlay image */
+static int ensure_original_image(void) {
+    if (g_original_image) return 1;
+
+    const char *search_paths[] = {
+        "keymap.png",
+        "assets\\keymap.png",
+        "..\\assets\\keymap.png",
+        NULL
+    };
+
+    for (int i = 0; search_paths[i]; i++) {
+        FILE *f = fopen(search_paths[i], "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (sz > 0) {
+                g_original_image = (unsigned char *)malloc((size_t)sz);
+                if (!g_original_image) {
+                    fclose(f);
+                    return 0;
+                }
+                if (fread(g_original_image, 1, (size_t)sz, f) == (size_t)sz) {
+                    g_original_image_size = (int)sz;
+                    fclose(f);
+                    return 1;
+                }
+                free(g_original_image);
+                g_original_image = NULL;
+            }
+            fclose(f);
+        }
+    }
+
+    int size = 0;
+    const unsigned char *data = get_default_keymap(&size);
+    if (data && size > 0) {
+        g_original_image = (unsigned char *)malloc((size_t)size);
+        if (!g_original_image) return 0;
+        memcpy(g_original_image, data, (size_t)size);
+        g_original_image_size = size;
+        return 1;
+    }
+
+    return 0;
+}
+
 static int parse_hotkey(const char *hotkey_str, UINT *modifiers, UINT *vk) {
     if (!hotkey_str || !modifiers || !vk) return 0;
     *modifiers = 0;
@@ -158,43 +219,24 @@ static int parse_hotkey(const char *hotkey_str, UINT *modifiers, UINT *vk) {
 }
 
 static int init_overlay(void) {
-    /* Determine overlay dimensions */
+    if (!ensure_original_image()) {
+        MessageBoxA(NULL,
+            "Could not find keymap.png or embedded fallback.",
+            "Error", MB_OK);
+        return 0;
+    }
+
     int max_w, max_h;
     if (g_config.use_custom_size) {
-        /* Use custom pixel dimensions */
         max_w = g_config.custom_width_px;
         max_h = g_config.custom_height_px;
     } else {
-        /* Apply configurable scaling to max dimensions */
         max_w = (int)(1920 * g_config.scale);
         max_h = (int)(1080 * g_config.scale);
     }
-    
-    /* Try multiple locations for keymap.png */
-    const char *search_paths[] = {
-        "keymap.png",           // Current directory
-        "assets\\keymap.png",   // Assets folder
-        "..\\assets\\keymap.png", // Assets folder (relative)
-        NULL
-    };
-    
-    OverlayError result = OVERLAY_ERROR_FILE_NOT_FOUND;
-    for (int i = 0; search_paths[i] != NULL; i++) {
-        result = load_overlay(search_paths[i], max_w, max_h, &g_overlay);
-        if (result == OVERLAY_OK) {
-            break;
-        }
-    }
-    
-    if (result != OVERLAY_OK) {
-        /* Try embedded fallback */
-        int size;
-        const unsigned char *data = get_default_keymap(&size);
-        if (data && size > 0) {
-            result = load_overlay_mem(data, size, max_w, max_h, &g_overlay);
-        }
-    }
-    
+
+    OverlayError result = load_overlay_mem(g_original_image, g_original_image_size,
+                                           max_w, max_h, &g_overlay);
     if (result != OVERLAY_OK) {
         const char *error_msg = "Unknown error";
         switch (result) {
@@ -206,8 +248,10 @@ static int init_overlay(void) {
                 error_msg = "Out of memory loading image"; break;
             case OVERLAY_ERROR_RESIZE_FAILED:
                 error_msg = "Failed to resize image"; break;
+            case OVERLAY_ERROR_NULL_PARAM:
+                error_msg = "Internal error"; break;
         }
-        
+
         char full_msg[512];
         snprintf(full_msg, sizeof(full_msg),
             "%s\n\nPlease place keymap.png in one of these locations:\n"
@@ -216,9 +260,12 @@ static int init_overlay(void) {
         MessageBoxA(NULL, full_msg, "Error", MB_OK);
         return 0;
     }
-    
-    /* Apply effects */
+
     apply_effects(&g_overlay, g_config.opacity, g_config.invert);
+    g_last_scale = g_config.scale;
+    g_last_custom_width = g_config.custom_width_px;
+    g_last_custom_height = g_config.custom_height_px;
+    g_last_use_custom = g_config.use_custom_size;
     return 1;
 }
 
@@ -362,16 +409,41 @@ static void toggle_overlay(void) {
     else show_overlay();
 }
 
-static void reload_overlay_with_scale(void) {
+static void reload_overlay_if_needed(void) {
+    if (fabsf(g_config.scale - g_last_scale) < 0.001f &&
+        g_config.custom_width_px == g_last_custom_width &&
+        g_config.custom_height_px == g_last_custom_height &&
+        g_config.use_custom_size == g_last_use_custom) {
+        return; /* No changes */
+    }
+
+    g_last_scale = g_config.scale;
+    g_last_custom_width = g_config.custom_width_px;
+    g_last_custom_height = g_config.custom_height_px;
+    g_last_use_custom = g_config.use_custom_size;
+
     BOOL was_visible = g_visible;
     if (was_visible) hide_overlay();
-    
-    /* Clean up current resources */
-    cleanup_resources();
-    
-    /* Reinitialize with new scale */
-    if (init_overlay() && create_bitmap()) {
-        if (was_visible) show_overlay();
+
+    if (g_bitmap) { DeleteObject(g_bitmap); g_bitmap = NULL; }
+    if (g_mem_dc) { DeleteDC(g_mem_dc); g_mem_dc = NULL; }
+    if (g_screen_dc) { ReleaseDC(NULL, g_screen_dc); g_screen_dc = NULL; }
+    free_overlay(&g_overlay);
+
+    int max_w, max_h;
+    if (g_config.use_custom_size) {
+        max_w = g_config.custom_width_px;
+        max_h = g_config.custom_height_px;
+    } else {
+        max_w = (int)(1920 * g_config.scale);
+        max_h = (int)(1080 * g_config.scale);
+    }
+
+    OverlayError res = load_overlay_mem(g_original_image, g_original_image_size,
+                                        max_w, max_h, &g_overlay);
+    if (res == OVERLAY_OK) {
+        apply_effects(&g_overlay, g_config.opacity, g_config.invert);
+        if (create_bitmap() && was_visible) show_overlay();
     }
 }
 
@@ -450,7 +522,7 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             g_config.scale = pos / 100.0f;
             update_scale_label();
             /* Apply scale immediately for real-time preview */
-            reload_overlay_with_scale();
+            reload_overlay_if_needed();
             return 0;
         } else if (hSlider == g_opacity_slider) {
             int pos = (int)SendMessage(hSlider, TBM_GETPOS, 0, 0);
@@ -498,7 +570,7 @@ static LRESULT CALLBACK PrefsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 if (g_visible) {
                     apply_effects(&g_overlay, g_config.opacity, g_config.invert);
                 }
-                reload_overlay_with_scale();
+                reload_overlay_if_needed();
                 
                 DestroyWindow(hwnd);
                 g_prefs_window = NULL;
@@ -701,25 +773,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             g_config.scale = 0.75f;
             g_config.use_custom_size = 0;
             save_config(&g_config, NULL);
-            reload_overlay_with_scale();
+            reload_overlay_if_needed();
             break;
         case 202: /* 100% */
             g_config.scale = 1.0f;
             g_config.use_custom_size = 0;
             save_config(&g_config, NULL);
-            reload_overlay_with_scale();
+            reload_overlay_if_needed();
             break;
         case 203: /* 125% */
             g_config.scale = 1.25f;
             g_config.use_custom_size = 0;
             save_config(&g_config, NULL);
-            reload_overlay_with_scale();
+            reload_overlay_if_needed();
             break;
         case 204: /* 150% */
             g_config.scale = 1.5f;
             g_config.use_custom_size = 0;
             save_config(&g_config, NULL);
-            reload_overlay_with_scale();
+            reload_overlay_if_needed();
             break;
         case 205: /* Fit Screen */ {
             /* Calculate scale to fit 80% of primary monitor width */
@@ -729,7 +801,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 g_config.scale = targetWidth / g_overlay.width;
                 g_config.use_custom_size = 0;
                 save_config(&g_config, NULL);
-                reload_overlay_with_scale();
+                reload_overlay_if_needed();
             }
             break;
         }
