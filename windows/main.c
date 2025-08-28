@@ -881,6 +881,14 @@ static void open_prefs_window(void) {
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+    case WM_NCHITTEST:
+        /* Route all mouse events to underlying windows */
+        return HTTRANSPARENT;
+
+    case WM_MOUSEACTIVATE:
+        /* Prevent the overlay from ever taking focus */
+        return MA_NOACTIVATE;
+
     case WM_TRAY:
         if (lParam == WM_RBUTTONUP) show_tray_menu();
         break;
