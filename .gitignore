@@ -48,3 +48,7 @@ keymap_embedded.h
 # Build directory artifacts (catch any build/ at repo root or nested)
 build/
 build/**
+
+# AI generated files
+.clinerules
+memory-bank
