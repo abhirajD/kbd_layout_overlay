@@ -171,6 +171,7 @@ jobs:
             echo "Missing shared\platform.h"
             exit 1
           )
+        shell: cmd
 
       - name: Upload Windows executable
         if: matrix.os == 'windows-latest'
