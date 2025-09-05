@@ -2,8 +2,10 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <stdlib.h>
-#include "config.h"
-#include "log.h"
+#include <stdio.h>
+#include <math.h>
+#include "../shared/config.h"
+#include "../shared/log.h"
 
 #define IDC_SCALE_SLIDER 1001
 #define IDC_SCALE_LABEL 1002

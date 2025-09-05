@@ -1,5 +1,7 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <stdio.h>
+#include <math.h>
 #include "MenuController.h"
 #include "../shared/config.h"
 #include "../shared/log.h"

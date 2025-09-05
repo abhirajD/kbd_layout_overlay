@@ -2,15 +2,14 @@
 #define WINDOW_MANAGER_H
 
 #include <windows.h>
-
-struct Config;
-struct Overlay;
+#include "../shared/config.h"
+#include "../shared/overlay.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int window_manager_init(struct Config *config, struct Overlay *overlay);
+int window_manager_init(Config *config, Overlay *overlay);
 void window_manager_cleanup(void);
 HWND window_manager_get_window(void);
 int window_manager_create_bitmap(void);

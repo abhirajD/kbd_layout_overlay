@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+
+/* Tray message constant */
+#define WM_TRAY (WM_USER + 1)
 #include "config.h"
 #include "overlay.h"
 #include "log.h"

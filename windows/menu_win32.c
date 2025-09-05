@@ -2,8 +2,9 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <stdlib.h>
-#include "config.h"
-#include "log.h"
+#include <stdio.h>
+#include "../shared/config.h"
+#include "../shared/log.h"
 
 #define WM_TRAY_ICON (WM_USER + 1)
 #define ID_TRAY_ICON 1

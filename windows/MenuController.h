@@ -2,14 +2,13 @@
 #define MENU_CONTROLLER_H
 
 #include <windows.h>
-
-struct Config;
+#include "../shared/config.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int menu_controller_init(struct Config *config, HINSTANCE hInstance, HWND hwnd);
+int menu_controller_init(Config *config, HINSTANCE hInstance, HWND hwnd);
 void menu_controller_cleanup(void);
 void menu_controller_set_callbacks(
     void (*show_callback)(void),
