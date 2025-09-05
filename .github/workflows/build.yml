@@ -73,10 +73,18 @@ jobs:
           cmake -S . -B build -DENABLE_CODESIGN=OFF
           echo "CMake configure completed for macOS"
 
-      - name: Build
+      - name: Build (macOS)
+        if: matrix.os == 'macos-latest'
         run: |
-          echo "Starting build on ${{ matrix.os }}"
+          echo "Starting build on macOS"
           time cmake --build build --config Release
+          echo "Build completed successfully"
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "Starting build on Windows"
+          cmake --build build --config Release
           echo "Build completed successfully"
 
       - name: Run all tests (macOS)
