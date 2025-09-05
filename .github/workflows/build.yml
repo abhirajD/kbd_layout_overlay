@@ -135,10 +135,40 @@ jobs:
       - name: Verify abstraction layers (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          if exist "shared\platform.h" if exist "shared\event_system.h" if exist "shared\file_system.h" if exist "shared\graphics.h" if exist "shared\threading.h" if exist "shared\system_info.h" if exist "shared\timer.h" (
-            echo "All 7 abstraction layers present"
+          if exist "shared\platform.h" (
+            if exist "shared\event_system.h" (
+              if exist "shared\file_system.h" (
+                if exist "shared\graphics.h" (
+                  if exist "shared\threading.h" (
+                    if exist "shared\system_info.h" (
+                      if exist "shared\timer.h" (
+                        echo "All 7 abstraction layers present"
+                      ) else (
+                        echo "Missing shared\timer.h"
+                        exit 1
+                      )
+                    ) else (
+                      echo "Missing shared\system_info.h"
+                      exit 1
+                    )
+                  ) else (
+                    echo "Missing shared\threading.h"
+                    exit 1
+                  )
+                ) else (
+                  echo "Missing shared\graphics.h"
+                  exit 1
+                )
+              ) else (
+                echo "Missing shared\file_system.h"
+                exit 1
+              )
+            ) else (
+              echo "Missing shared\event_system.h"
+              exit 1
+            )
           ) else (
-            echo "Missing abstraction layers"
+            echo "Missing shared\platform.h"
             exit 1
           )
 
